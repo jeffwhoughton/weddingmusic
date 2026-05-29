@@ -2,6 +2,19 @@
  *  Playlist Studio — frontend logic
  * ===================================================================== */
 
+const PLAYLIST_DESCRIPTIONS = {
+  "Pizza Party": "Monday, 5pm - Chill and hang.",
+  "Pizza Party 2": "Monday, 7pm - A bit more upbeat.",
+  "The Church": "Tuesday, 1pm - Songs for the band.",
+  "Cocktails + Din": "Tuesday, 5pm - Love songs for dinner.",
+  "Wedding Reception": "Tuesday, 8pm - The party.",
+  "Reception 2": "Tuesday, 10pm - More party.",
+  "Reception 3": "Tuesday, Midnight - More niche / chill.",
+  "End The Night": "Tuesday, Late - Wind it down.",
+  "Extra Songs": "Backups",
+  "Trash": "Things to delete."
+};
+
 const EMOJIS = ["💞", "✨", "🍂", "🕺"];
 const audio = document.getElementById("audio");
 
@@ -59,8 +72,24 @@ function renderPlaylists() {
     const el = document.createElement("div");
     el.className = "playlist-tile" + (p.name === state.current ? " active" : "");
     el.dataset.name = p.name;
+    
+    let fullDesc = PLAYLIST_DESCRIPTIONS[p.name] || "";
+    let timeStr = "";
+    let descStr = fullDesc;
+    if (fullDesc.includes(" - ")) {
+      const idx = fullDesc.indexOf(" - ");
+      timeStr = fullDesc.slice(0, idx);
+      descStr = fullDesc.slice(idx);
+    } else if (fullDesc) {
+      descStr = " - " + fullDesc;
+    }
+
+    const timeHtml = timeStr ? `<div class="pl-time eyebrow">${esc(timeStr)}</div>` : "";
+    const descHtml = descStr ? `<span class="pl-inline-desc">${esc(descStr)}</span>` : "";
+
     el.innerHTML = `
-      <div class="pl-name">${esc(p.name)}</div>
+      ${timeHtml}
+      <div class="pl-name">${esc(p.name)}${descHtml}</div>
       <div class="pl-meta"><b>${p.song_count}</b> song${p.song_count===1?"":"s"} · ${p.duration_human}</div>`;
     el.addEventListener("click", () => selectPlaylist(p.name));
     // drop target for moving songs/dividers into this playlist
@@ -97,7 +126,27 @@ function selectedItems() {
 }
 
 function renderItems() {
-  $("songs-title").textContent = state.current || "—";
+  let fullDesc = PLAYLIST_DESCRIPTIONS[state.current] || "";
+  let timeStr = "";
+  let descStr = fullDesc;
+  if (fullDesc.includes(" - ")) {
+    const idx = fullDesc.indexOf(" - ");
+    timeStr = fullDesc.slice(0, idx);
+    descStr = fullDesc.slice(idx);
+  } else if (fullDesc) {
+    descStr = " - " + fullDesc;
+  }
+
+  const descHtml = descStr ? `<span class="songs-inline-desc pl-inline-desc">${esc(descStr)}</span>` : "";
+  
+  $("songs-title").innerHTML = `${esc(state.current || "—")}${descHtml}`;
+  if ($("songs-eyebrow")) {
+    $("songs-eyebrow").textContent = timeStr || "Now editing";
+  }
+  if ($("songs-desc")) {
+    $("songs-desc").style.display = "none";
+  }
+
   const songCount = state.items.filter((i) => i.type === "song").length;
   const pl = state.playlists.find((p) => p.name === state.current);
   $("songs-sub").textContent = pl ? `${songCount} songs · ${pl.duration_human}` : "";
@@ -106,16 +155,45 @@ function renderItems() {
   const loneDivider = sel.length === 1 && sel[0].type === "divider" ? sel[0].id : null;
 
   const list = $("song-list");
+
+  // DOM reuse optimization to prevent image reloading on moves or metadata updates
+  const oldSongs = new Map();
+  for (const child of Array.from(list.children)) {
+    if (child.classList.contains("row") && child.__item) {
+      oldSongs.set(sigOf(child.__item), child);
+    }
+  }
+
   list.innerHTML = "";
   for (const it of state.items) {
-    list.appendChild(it.type === "divider"
-      ? dividerEl(it, it.id === loneDivider)
-      : songEl(it));
+    if (it.type === "divider") {
+      list.appendChild(dividerEl(it, it.id === loneDivider));
+    } else {
+      const sig = sigOf(it);
+      let el = oldSongs.get(sig);
+      if (el) {
+        // Reuse
+        el.__item = it;
+        el.dataset.id = it.id;
+        el.querySelector(".pos").textContent = it.position;
+        el.querySelector(".emoji").textContent = it.emoji || "";
+        
+        const isSelected = state.selection.has(it.id);
+        el.querySelector(".chk").checked = isSelected;
+        
+        const isPlaying = state.playing && sig === state.playing.sig;
+        el.className = "row" + (isSelected ? " selected" : "") + (isPlaying ? " playing" : "");
+        list.appendChild(el);
+      } else {
+        list.appendChild(songEl(it));
+      }
+    }
   }
 }
 
 function songEl(it) {
   const row = document.createElement("div");
+  row.__item = it;
   const isPlaying = state.playing && sigOf(it) === state.playing.sig;
   row.className = "row" + (state.selection.has(it.id) ? " selected" : "")
                 + (isPlaying ? " playing" : "");
@@ -140,13 +218,13 @@ function songEl(it) {
   img.onerror = () => { img.replaceWith(placeholderArt()); };
 
   row.querySelector(".chk").addEventListener("click", (e) => {
-    e.stopPropagation(); toggleSelect(it.id, e);
+    e.stopPropagation(); toggleSelect(row.__item.id, e);
   });
   // play when clicking the body of the row
-  row.querySelector(".meta").addEventListener("click", () => playSong(it));
-  img.addEventListener("click", () => playSong(it));
+  row.querySelector(".meta").addEventListener("click", () => playSong(row.__item));
+  img.addEventListener("click", () => playSong(row.__item));
 
-  attachDrag(row, it);
+  attachDrag(row);
   return row;
 }
 
@@ -197,7 +275,7 @@ function dividerEl(it, editing) {
     el.querySelector(".label").addEventListener("dblclick", () => {
       state.selection.clear(); state.selection.add(it.id); renderItems();
     });
-    attachDrag(el, it);
+    attachDrag(el);
   }
   return el;
 }
@@ -237,16 +315,17 @@ let dragSet = [];          // ids being dragged
 let dropRefId = null;      // insert before this id
 let dropAtEnd = false;
 
-function attachDrag(el, it) {
+function attachDrag(el) {
   el.addEventListener("dragstart", (e) => {
+    const id = el.dataset.id;
     // if the grabbed item is part of a multi-selection, drag the whole set
-    if (state.selection.has(it.id) && state.selection.size > 0) {
+    if (state.selection.has(id) && state.selection.size > 0) {
       dragSet = state.items.filter((x) => state.selection.has(x.id)).map((x) => x.id);
     } else {
-      dragSet = [it.id];
+      dragSet = [id];
     }
     e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", it.id);
+    e.dataTransfer.setData("text/plain", id);
     requestAnimationFrame(() => el.classList.add("dragging"));
   });
   el.addEventListener("dragend", () => {
@@ -318,9 +397,15 @@ function playSong(it) {
   state.playing = { sig: sigOf(it), item: it };
   audio.src = it.audio_url;
   audio.play().catch(() => {});
-  renderPlayer();
-  renderItems();
-  loadOccurrences(it);
+  
+  // Set a tiny timeout so the browser prioritizes network resources 
+  // for downloading the MP3 GET request before any potential DOM rebuilds 
+  // queue up heavy artwork GET requests.
+  setTimeout(() => {
+    renderPlayer();
+    renderItems();
+    loadOccurrences(it);
+  }, 10);
 }
 
 function renderPlayer() {

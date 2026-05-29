@@ -42,16 +42,19 @@ BASE_DIR = Path(__file__).resolve().parent
 PLAYLISTS_DIR = BASE_DIR / "playlists"
 STATIC_DIR = BASE_DIR / "static"
 
-ALLOWED_EMOJIS = ["💞", "✨", "🍂", "🕺"]
+ALLOWED_EMOJIS = ["💞", "✨", "🍂", "🕺","🗑️"]
 DEFAULT_EMOJI = "✨"
 AUDIO_EXTS = {".mp3", ".m4a", ".flac", ".ogg", ".opus", ".wav", ".aac", ".webm"}
 
 DEFAULT_PLAYLISTS = [
     "Pizza Party",
-    "Wedding Church",
-    "Wedding Cocktails",
+    "Pizza Party 2",
+    "The Church",
+    "Cocktails + Din",
     "Wedding Reception",
-    "Wedding Close Out",
+    "Reception 2",
+    "Reception 3",
+    "End The Night",
     "Extra Songs",
     "Trash",
 ]
@@ -590,4 +593,4 @@ if __name__ == "__main__":
     ensure_playlists()
     port = int(os.environ.get("PORT", 5005))
     print(f"\n  ♪  Playlist Studio running at  http://127.0.0.1:{port}\n")
-    app.run(debug=True, port=port)
+    app.run(host="0.0.0.0", debug=True, port=port)
