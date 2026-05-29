@@ -243,15 +243,15 @@ body::after {
 .btn.primary:hover { filter: brightness(1.06); }
 
 /* --------------------------------------------------------- column 3: player */
-.player { padding: 24px 26px; display: flex; flex-direction: column; height: 100%; }
+.player { padding: 24px 26px; display: flex; flex-direction: column; height: 100%; text-align: center; }
 .player .empty {
   margin: auto; text-align: center; color: var(--muted);
   font-family: 'Fraunces', serif; font-style: italic; font-size: 17px;
 }
 .player .cover {
-  width: 100%; aspect-ratio: 1; border-radius: var(--radius);
+  width: 50%; aspect-ratio: 1; border-radius: var(--radius);
   object-fit: cover; box-shadow: var(--shadow); background: var(--panel-2);
-  margin-bottom: 22px;
+  margin: 0 auto 22px auto;
 }
 .player .cover.placeholder { display: grid; place-items: center; font-size: 54px; color: var(--muted); }
 .player .np-pl {
@@ -306,7 +306,7 @@ body::after {
   font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
   color: var(--muted); margin-bottom: 10px;
 }
-.emoji-pick .opts { display: flex; gap: 10px; }
+.emoji-pick .opts { display: flex; gap: 10px; width: 50%; margin: 0 auto; }
 .emoji-pick .opt {
   flex: 1; aspect-ratio: 1; border-radius: 12px; font-size: 22px;
   display: grid; place-items: center; cursor: pointer;

@@ -46,7 +46,10 @@ function toast(msg) {
 async function loadPlaylists() {
   state.playlists = await api("GET", "/api/playlists");
   renderPlaylists();
-  if (!state.current && state.playlists.length) selectPlaylist(state.playlists[0].name);
+  if (!state.current && state.playlists.length) {
+    const defaultPl = state.playlists.find(p => p.name === "Wedding Reception") || state.playlists[0];
+    selectPlaylist(defaultPl.name);
+  }
 }
 
 function renderPlaylists() {
@@ -366,12 +369,19 @@ async function setEmoji(em) {
   if (it.emoji === em) return;
   const wasPlaying = !audio.paused;
   const t = audio.currentTime;
-  const res = await api("POST", "/api/emoji",
-    { playlist: it.playlist, id: it.id, emoji: em });
-  // file renamed → update references and keep audio playing seamlessly
+  
+  const res = await api("POST", "/api/emoji", { playlist: it.playlist, id: it.id, emoji: em });
   it.emoji = em; it.id = res.id;
   it.audio_url = `/api/audio/${encodeURIComponent(it.playlist)}/${encodeURIComponent(res.id)}`;
   it.art_url = `/api/art/${encodeURIComponent(it.playlist)}/${encodeURIComponent(res.id)}`;
+  
+  const selectedSongs = selectedItems().filter(x => x.type === "song" && x.id !== p.item.id);
+  if (selectedSongs.length > 0 && state.selection.size > 1) {
+    await Promise.all(selectedSongs.map(s => 
+      api("POST", "/api/emoji", { playlist: s.playlist, id: s.id, emoji: em })
+    ));
+  }
+
   swapAudio(it.audio_url, t, wasPlaying);
   renderPlayer();
   if (it.playlist === state.current) await loadItems();

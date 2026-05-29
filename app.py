@@ -415,7 +415,10 @@ def api_artist_occurrences():
     else:
         parts = []
         for pl, c in sorted(by_playlist.items(), key=lambda kv: -kv[1]):
-            parts.append(f"{pl} {c} time" + ("s" if c != 1 else ""))
+            if pl == cur_pl:
+                parts.append(f"{pl} {c} other time" + ("s" if c != 1 else ""))
+            else:
+                parts.append(f"{pl} {c} time" + ("s" if c != 1 else ""))
         text = "In " + ", ".join(parts)
     return jsonify({"total": total, "by_playlist": by_playlist, "text": text})
 
@@ -477,6 +480,7 @@ def api_add_divider():
     pdir = playlist_path(playlist)
     pos = len(list_items(pdir)) + 1
     (pdir / f"{pos} - {name}.txt").write_text(name, encoding="utf-8")
+    renumber(playlist)
     return api_playlist(playlist)
 
 
@@ -494,6 +498,7 @@ def api_rename_divider():
     dst = pdir / f"{pos} - {new_name}.txt"
     os.replace(str(src), str(dst))
     dst.write_text(new_name, encoding="utf-8")
+    renumber(playlist)
     return jsonify({"ok": True, "id": dst.name})
 
 
