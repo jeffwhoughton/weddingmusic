@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Playlist Studio</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="topbar">
+    <span class="mark">Playlist <span class="amp">&amp;</span> Studio</span>
+    <span class="tag">curate · sequence · play</span>
+  </div>
+
+  <div class="app">
+    <!-- Column 1 : playlists -->
+    <section class="col" id="col-playlists">
+      <div class="col-head">
+        <span class="eyebrow">Library</span>
+        <h2>Playlists</h2>
+        <span class="sub">Drag songs onto a playlist to move them</span>
+      </div>
+      <div class="scroll" id="playlist-list"></div>
+    </section>
+
+    <!-- Column 2 : current playlist contents -->
+    <section class="col" id="col-songs">
+      <div class="col-head">
+        <span class="eyebrow" id="songs-eyebrow">Now editing</span>
+        <h2 id="songs-title">—</h2>
+        <span class="sub" id="songs-sub"></span>
+      </div>
+      <div class="scroll" id="song-list"></div>
+      <div class="add-bar">
+        <button class="btn" id="add-divider-btn">＋ Add New Divider</button>
+        <button class="btn primary" id="add-song-btn">♪ Add New Song</button>
+      </div>
+    </section>
+
+    <!-- Column 3 : player -->
+    <section class="col" id="col-player">
+      <div class="player" id="player">
+        <div class="empty" id="player-empty">Pick a song to start playing.</div>
+        <div id="player-body" style="display:none; flex-direction:column; height:100%;">
+          <img class="cover" id="np-cover" alt="">
+          <div class="np-pl" id="np-pl"></div>
+          <div class="np-title" id="np-title"></div>
+          <div class="np-artist" id="np-artist"></div>
+          <div class="np-occ" id="np-occ"></div>
+
+          <div class="scrub">
+            <div class="track" id="scrub-track"><div class="fill" id="scrub-fill"></div></div>
+            <div class="times"><span id="t-cur">0:00</span><span id="t-dur">0:00</span></div>
+          </div>
+
+          <div class="transport">
+            <button id="prev-btn" title="Previous">⏮</button>
+            <button class="play" id="play-btn" title="Play / Pause">▶</button>
+            <button id="next-btn" title="Next">⏭</button>
+          </div>
+
+          <div class="emoji-pick">
+            <div class="lbl">Tag this song</div>
+            <div class="opts" id="emoji-opts"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Add-song modal -->
+  <div class="overlay" id="song-modal">
+    <div class="modal">
+      <h3>Add a song</h3>
+      <p>Paste a YouTube Music link — it'll be downloaded and added to the end of
+         <b id="modal-pl">this playlist</b>.</p>
+      <input type="text" id="song-url" placeholder="https://music.youtube.com/watch?v=…" autocomplete="off">
+      <div class="status" id="song-status"></div>
+      <div class="actions">
+        <button class="btn" id="song-cancel">Cancel</button>
+        <button class="btn primary" id="song-download">Download &amp; Add</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <audio id="audio"></audio>
+  <script src="/static/app.js"></script>
+</body>
+</html>
