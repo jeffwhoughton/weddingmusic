@@ -2,9 +2,23 @@
  *  Playlist Studio — frontend logic
  * ===================================================================== */
 
+const PLAYLIST_DESCRIPTIONS = {
+  "Pizza Party": "Monday, 5pm - Chill and hang.",
+  "Pizza Party 2": "Monday, 7pm - A bit more upbeat.",
+  "The Church": "Tuesday, 1pm - Songs for the band.",
+  "Cocktails + Din": "Tuesday, 5pm - Love songs for dinner.",
+  "Wedding Reception": "Tuesday, 8pm - The party.",
+  "Reception 2": "Tuesday, 10pm - More party.",
+  "Reception 3": "Tuesday, Midnight - More niche / chill.",
+  "End The Night": "Tuesday, Late - Wind it down.",
+  "Extra Songs": "Backups",
+  "Instrumentals": "Just in case.",
+  "Trash": "Things to delete."
+};
+
 const EMOJIS = ["💞", "✨", "🍂", "🕺"];
-const audio  = document.getElementById("audio");
-const audiob = document.getElementById("audio-b");
+let audio  = document.getElementById("audio");
+let audiob = document.getElementById("audio-b");
 
 const state = {
   playlists: [],
@@ -166,30 +180,43 @@ function completeTransition(nextItem) {
   if (!transState.active) return;
   transState.active = false;
   clearTimeout(transState.completeTimer);
-
-  const bTime = audiob.currentTime;
-  audiob.pause();
-
-  const now = audioCtx ? audioCtx.currentTime : 0;
-  if (audioCtx) {
-    hpfA.frequency.cancelScheduledValues(now); hpfA.frequency.setValueAtTime(20, now);
-    gainA.gain.cancelScheduledValues(now);     gainA.gain.setValueAtTime(1.0, now);
-    gainB.gain.cancelScheduledValues(now);     gainB.gain.setValueAtTime(0.0, now);
-    lpfB.frequency.cancelScheduledValues(now); lpfB.frequency.setValueAtTime(280, now);
-  }
   audio.playbackRate = 1.0;
 
-  // Hand deck B content over to deck A
+  // Snap ramps to final state
+  const now = audioCtx.currentTime;
+  gainA.gain.cancelScheduledValues(now); gainA.gain.setValueAtTime(0.0, now);
+  gainB.gain.cancelScheduledValues(now); gainB.gain.setValueAtTime(1.0, now);
+  hpfA.frequency.cancelScheduledValues(now); hpfA.frequency.setValueAtTime(20, now);
+  lpfB.frequency.cancelScheduledValues(now); lpfB.frequency.setValueAtTime(20000, now);
+
+  // Promote deck B to deck A by swapping all variable references.
+  // audiob is already playing the next song at the right position —
+  // no reload, no seek, no silence gap.
+  const oldAudio = audio;
+  [audio, audiob] = [audiob, audio];
+  [srcA,  srcB  ] = [srcB,  srcA  ];
+  [gainA, gainB ] = [gainB, gainA ];
+  [hpfA,  lpfB  ] = [lpfB,  hpfA  ];
+
+  // Move event listeners to the new primary element
+  reattachAudioListeners(oldAudio);
+  // audio is already playing; sync button since the play event won't re-fire
+  $("play-btn").textContent = audio.paused ? "▶" : "⏸";
+
+  // Re-initialise filter roles for the swapped nodes
+  const n2 = audioCtx.currentTime;
+  hpfA.type = "highpass"; hpfA.frequency.setValueAtTime(20,  n2); hpfA.Q.value = 0.5;
+  lpfB.type = "lowpass";  lpfB.frequency.setValueAtTime(280, n2); lpfB.Q.value = 2.2;
+  gainA.gain.setValueAtTime(1.0, n2);
+  gainB.gain.setValueAtTime(0.0, n2);
+
+  // Silence and clear the old outgoing element (now behind audiob)
+  audiob.pause();
+  audiob.src = "";
+
   state.playing = { sig: sigOf(nextItem), item: nextItem };
   transState.armed      = false;
   transState.plannedDur = null;
-  audio.src = nextItem.audio_url;
-  audio.addEventListener("loadedmetadata", function once() {
-    audio.removeEventListener("loadedmetadata", once);
-    try { audio.currentTime = bTime; } catch (_) {}
-    audio.play().catch(() => {});
-  });
-  audiob.src = "";
 
   $("player").classList.remove("transitioning");
   $("scrub-fill").classList.remove("transitioning");
@@ -239,8 +266,24 @@ function renderPlaylists() {
     const el = document.createElement("div");
     el.className = "playlist-tile" + (p.name === state.current ? " active" : "");
     el.dataset.name = p.name;
+    
+    let fullDesc = PLAYLIST_DESCRIPTIONS[p.name] || "";
+    let timeStr = "";
+    let descStr = fullDesc;
+    if (fullDesc.includes(" - ")) {
+      const idx = fullDesc.indexOf(" - ");
+      timeStr = fullDesc.slice(0, idx);
+      descStr = fullDesc.slice(idx);
+    } else if (fullDesc) {
+      descStr = " - " + fullDesc;
+    }
+
+    const timeHtml = timeStr ? `<div class="pl-time eyebrow">${esc(timeStr)}</div>` : "";
+    const descHtml = descStr ? `<span class="pl-inline-desc">${esc(descStr)}</span>` : "";
+
     el.innerHTML = `
-      <div class="pl-name">${esc(p.name)}</div>
+      ${timeHtml}
+      <div class="pl-name">${esc(p.name)}${descHtml}</div>
       <div class="pl-meta"><b>${p.song_count}</b> song${p.song_count===1?"":"s"} · ${p.duration_human}</div>`;
     el.addEventListener("click", () => selectPlaylist(p.name));
     // drop target for moving songs/dividers into this playlist
@@ -277,7 +320,27 @@ function selectedItems() {
 }
 
 function renderItems() {
-  $("songs-title").textContent = state.current || "—";
+  let fullDesc = PLAYLIST_DESCRIPTIONS[state.current] || "";
+  let timeStr = "";
+  let descStr = fullDesc;
+  if (fullDesc.includes(" - ")) {
+    const idx = fullDesc.indexOf(" - ");
+    timeStr = fullDesc.slice(0, idx);
+    descStr = fullDesc.slice(idx);
+  } else if (fullDesc) {
+    descStr = " - " + fullDesc;
+  }
+
+  const descHtml = descStr ? `<span class="songs-inline-desc pl-inline-desc">${esc(descStr)}</span>` : "";
+  
+  $("songs-title").innerHTML = `${esc(state.current || "—")}${descHtml}`;
+  if ($("songs-eyebrow")) {
+    $("songs-eyebrow").textContent = timeStr || "Now editing";
+  }
+  if ($("songs-desc")) {
+    $("songs-desc").style.display = "none";
+  }
+
   const songCount = state.items.filter((i) => i.type === "song").length;
   const pl = state.playlists.find((p) => p.name === state.current);
   $("songs-sub").textContent = pl ? `${songCount} songs · ${pl.duration_human}` : "";
@@ -650,29 +713,35 @@ async function advance(dir) {
 }
 
 /* transport + scrubber */
-$("play-btn").addEventListener("click", () => {
-  if (!state.playing) return;
-  if (audio.paused) audio.play(); else audio.pause();
-});
-$("next-btn").addEventListener("click", () => advance(+1));
-$("prev-btn").addEventListener("click", () => {
-  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
-  advance(-1);
-});
-audio.addEventListener("play",  () => { $("play-btn").textContent = "⏸"; });
-audio.addEventListener("pause", () => { $("play-btn").textContent = "▶"; });
-audio.addEventListener("ended", () => { if (transState.active) return; advance(+1); });
-audio.addEventListener("timeupdate", () => {
+function onAudioPlay()  { $("play-btn").textContent = "⏸"; }
+function onAudioPause() { $("play-btn").textContent = "▶"; }
+function onAudioEnded() { if (transState.active) return; advance(+1); }
+function onAudioTimeUpdate() {
   const d = audio.duration || 0;
   $("scrub-fill").style.width = d ? `${(audio.currentTime / d) * 100}%` : "0%";
   $("t-cur").textContent = fmt(audio.currentTime);
   $("t-dur").textContent = fmt(d);
 
+  // Compute plannedDur as soon as we have a valid duration (stable random value per song)
+  if (d > 0 && isFinite(d) && state.playing && transState.plannedDur === null
+      && !transState.active && !transState.armed) {
+    transState.plannedDur = computeTransitionDuration(state.playing.item);
+  }
+
+  // Update transition start marker
+  const marker = $("scrub-marker");
+  if ($("transition-enabled").checked && d > 0 && isFinite(d)
+      && transState.plannedDur !== null && !transState.active) {
+    const markerFrac = Math.max(0, (d - transState.plannedDur) / d);
+    marker.style.left = `${markerFrac * 100}%`;
+    marker.style.display = "";
+  } else {
+    marker.style.display = "none";
+  }
+
   // DJ transition arm: trigger when within plannedDur seconds of end
   if (!transState.armed && !transState.active && d > 0 && isFinite(d) && state.playing) {
-    if ($("transition-enabled").checked) {
-      if (transState.plannedDur === null)
-        transState.plannedDur = computeTransitionDuration(state.playing.item);
+    if ($("transition-enabled").checked && transState.plannedDur !== null) {
       const remaining = d - audio.currentTime;
       if (remaining > 0 && remaining <= transState.plannedDur) {
         transState.armed = true;
@@ -683,10 +752,39 @@ audio.addEventListener("timeupdate", () => {
       }
     }
   }
+}
+
+function reattachAudioListeners(oldEl) {
+  oldEl.removeEventListener("play",       onAudioPlay);
+  oldEl.removeEventListener("pause",      onAudioPause);
+  oldEl.removeEventListener("ended",      onAudioEnded);
+  oldEl.removeEventListener("timeupdate", onAudioTimeUpdate);
+  audio.addEventListener("play",       onAudioPlay);
+  audio.addEventListener("pause",      onAudioPause);
+  audio.addEventListener("ended",      onAudioEnded);
+  audio.addEventListener("timeupdate", onAudioTimeUpdate);
+}
+
+$('play-btn').addEventListener("click", () => {
+  if (!state.playing) return;
+  if (audio.paused) audio.play(); else audio.pause();
 });
+$('next-btn').addEventListener("click", () => advance(+1));
+$('prev-btn').addEventListener("click", () => {
+  if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+  advance(-1);
+});
+audio.addEventListener("play",  onAudioPlay);
+audio.addEventListener("pause", onAudioPause);
+audio.addEventListener("ended", onAudioEnded);
+audio.addEventListener("timeupdate", onAudioTimeUpdate);
 $("scrub-track").addEventListener("click", (e) => {
   const r = e.currentTarget.getBoundingClientRect();
-  if (audio.duration) audio.currentTime = ((e.clientX - r.left) / r.width) * audio.duration;
+  if (!audio.duration) return;
+  const newTime = ((e.clientX - r.left) / r.width) * audio.duration;
+  // Any manual scrub cancels an in-progress or armed transition
+  if (transState.active || transState.armed) abortTransition();
+  audio.currentTime = newTime;
 });
 
 /* ---------------------------------------------------- add divider / song */

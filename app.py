@@ -56,6 +56,7 @@ DEFAULT_PLAYLISTS = [
     "Reception 3",
     "End The Night",
     "Extra Songs",
+    "Instrumentals",
     "Trash",
 ]
 
