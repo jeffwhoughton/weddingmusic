@@ -390,6 +390,17 @@ body::after {
 }
 .transport .play:active { transform: scale(.95); }
 
+.transition-now-btn {
+  width: 40px; height: 40px; border-radius: 50%; border: none; cursor: pointer;
+  background: linear-gradient(180deg, #b585ff, #7b3fff);
+  color: #fff; font-size: 18px; display: grid; place-items: center;
+  box-shadow: 0 6px 18px -6px rgba(123,63,255,.75);
+  opacity: .9; transition: opacity .15s, transform .1s, box-shadow .15s;
+}
+.transition-now-btn:hover { opacity: 1; box-shadow: 0 8px 22px -4px rgba(123,63,255,.9); }
+.transition-now-btn:active { transform: scale(.95); }
+.transition-now-btn:disabled { opacity: .35; cursor: default; box-shadow: none; }
+
 /* emoji chooser */
 .emoji-pick { margin-top: 22px; overflow: hidden; max-height: 120px;
   transition: max-height .3s ease, opacity .22s ease, margin-top .3s ease; }

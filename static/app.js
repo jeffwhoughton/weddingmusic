@@ -1282,6 +1282,25 @@ $('play-btn').addEventListener("click", () => {
   }
 });
 $('next-btn').addEventListener("click", () => advance(+1));
+$('transition-now-btn').addEventListener("click", async () => {
+  if (!state.playing || transState.active || fadeToPause) return;
+  if (!$('transition-enabled').checked) return;
+  initWebAudio();
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+  const next = await getNextSong();
+  if (!next) { toast('No next song to transition to.'); return; }
+  if (transState.armed) {
+    // already armed — let startTransition handle it naturally
+    if (!transState.active) startTransition(next);
+    return;
+  }
+  // Compute plannedDur now if not yet set
+  if (transState.plannedDur === null) {
+    transState.plannedDur = computeTransitionDuration(state.playing.item);
+  }
+  transState.armed = true;
+  startTransition(next);
+});
 $('prev-btn').addEventListener("click", () => {
   if (audio.currentTime > 3) { audio.currentTime = 0; return; }
   advance(-1);
@@ -1548,6 +1567,7 @@ $("lock-modal").addEventListener("click", (e) => { if (e.target === $("lock-moda
 $("transition-enabled").addEventListener("change", () => {
   const on = $("transition-enabled").checked;
   $("shorten-row").style.display = on ? "" : "none";
+  $("transition-now-btn").style.display = on ? "" : "none";
   if (!on && $("shorten-enabled").checked) {
     $("shorten-enabled").checked = false;
     // Restore natural trigger point since transitions are now off
