@@ -17,6 +17,13 @@ const PLAYLIST_DESCRIPTIONS = {
 };
 
 const EMOJIS = ["💞", "✨", "🍂", "🕺"];
+
+// Linked playlist chains — when the last song ends, the next playlist auto-starts
+const LINKED_CHAINS = [
+  ["Pizza Party", "Pizza Party 2"],
+  ["Wedding Reception", "Reception 2", "Reception 3", "End The Night"],
+];
+
 let audio  = document.getElementById("audio");
 let audiob = document.getElementById("audio-b");
 
@@ -28,6 +35,11 @@ const state = {
   playing: null,          // { sig, item }  -- sig is rename-stable
   lastSelectedId: null,   // id of the last checked item for shift-click
 };
+
+let expanded = false;         // player expand mode
+let expandRenderToken = 0;    // cancels stale async renders
+let locked = false;           // lock screen mode
+const LOCK_PASSWORD = "1235";
 
 /* ---------------------------------------------------------------- utils */
 const $ = (id) => document.getElementById(id);
@@ -55,6 +67,27 @@ let toastT;
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+/* -------------------------------------------------------- linked chains */
+function nextLinkedPlaylist(name) {
+  for (const chain of LINKED_CHAINS) {
+    const idx = chain.indexOf(name);
+    if (idx >= 0 && idx < chain.length - 1) return chain[idx + 1];
+  }
+  return null;
+}
+
+function getChain(name) {
+  return LINKED_CHAINS.find(c => c.includes(name)) || null;
+}
+
+function isNextInChain(a, b) {
+  for (const chain of LINKED_CHAINS) {
+    const idx = chain.indexOf(a);
+    if (idx >= 0 && idx + 1 < chain.length && chain[idx + 1] === b) return true;
+  }
+  return false;
 }
 
 /* ====================================================== DJ Transition ===== */
@@ -108,6 +141,15 @@ async function getNextSong() {
   if (idx < 0) return null;
   for (let i = idx + 1; i < items.length; i++) {
     if (items[i].type === "song") return items[i];
+  }
+  // Try the next linked playlist
+  const nextPl = nextLinkedPlaylist(p.item.playlist);
+  if (nextPl) {
+    try {
+      const nextData = await api("GET", `/api/playlists/${encodeURIComponent(nextPl)}`);
+      const firstSong = nextData.items.find(x => x.type === "song");
+      if (firstSong) return firstSong;
+    } catch (_) {}
   }
   return null;
 }
@@ -262,7 +304,7 @@ async function loadPlaylists() {
 function renderPlaylists() {
   const wrap = $("playlist-list");
   wrap.innerHTML = "";
-  for (const p of state.playlists) {
+  state.playlists.forEach((p, pIdx) => {
     const el = document.createElement("div");
     el.className = "playlist-tile" + (p.name === state.current ? " active" : "");
     el.dataset.name = p.name;
@@ -297,7 +339,15 @@ function renderPlaylists() {
       moveToPlaylist(p.name);
     });
     wrap.appendChild(el);
-  }
+    // Chain link indicator between linked playlists
+    const nextP = state.playlists[pIdx + 1];
+    if (nextP && isNextInChain(p.name, nextP.name)) {
+      const conn = document.createElement("div");
+      conn.className = "chain-connector";
+      conn.innerHTML = `<span>⬇</span>`;
+      wrap.appendChild(conn);
+    }
+  });
 }
 
 /* --------------------------------------------------- load + render col2 */
@@ -311,7 +361,11 @@ async function loadItems() {
   const data = await api("GET", `/api/playlists/${encodeURIComponent(state.current)}`);
   state.items = data.items;
   state.selection.clear();           // selection is transient across renames
-  renderItems();
+  if (expanded) {
+    await renderExpandedItems();
+  } else {
+    renderItems();
+  }
   resyncPlaying();
 }
 
@@ -320,6 +374,7 @@ function selectedItems() {
 }
 
 function renderItems() {
+  if (expanded) { renderExpandedItems(); return; }
   let fullDesc = PLAYLIST_DESCRIPTIONS[state.current] || "";
   let timeStr = "";
   let descStr = fullDesc;
@@ -391,7 +446,7 @@ function songEl(it) {
   const isPlaying = state.playing && sigOf(it) === state.playing.sig;
   row.className = "row" + (state.selection.has(it.id) ? " selected" : "")
                 + (isPlaying ? " playing" : "");
-  row.draggable = true;
+  row.draggable = !expanded;
   row.dataset.id = it.id;
 
   const checked = state.selection.has(it.id) ? "checked" : "";
@@ -418,7 +473,7 @@ function songEl(it) {
   row.querySelector(".meta").addEventListener("click", () => playSong(row.__item));
   img.addEventListener("click", () => playSong(row.__item));
 
-  attachDrag(row);
+  if (!expanded) attachDrag(row);
   return row;
 }
 
@@ -431,7 +486,7 @@ function placeholderArt() {
 function dividerEl(it, editing) {
   const el = document.createElement("div");
   el.className = "divider" + (state.selection.has(it.id) ? " selected" : "");
-  el.draggable = !editing;
+  el.draggable = !editing && !expanded;
   el.dataset.id = it.id;
 
   const checked = state.selection.has(it.id) ? "checked" : "";
@@ -469,7 +524,7 @@ function dividerEl(it, editing) {
     el.querySelector(".label").addEventListener("dblclick", () => {
       state.selection.clear(); state.selection.add(it.id); renderItems();
     });
-    attachDrag(el);
+    if (!expanded) attachDrag(el);
   }
   return el;
 }
@@ -710,6 +765,17 @@ async function advance(dir) {
     if (items[i].type === "song") { playSong(items[i]); return; }
     i += dir;
   }
+  // If advancing forward past the end, try the next linked playlist
+  if (dir > 0) {
+    const nextPl = nextLinkedPlaylist(p.item.playlist);
+    if (nextPl) {
+      try {
+        const nextData = await api("GET", `/api/playlists/${encodeURIComponent(nextPl)}`);
+        const firstSong = nextData.items.find(x => x.type === "song");
+        if (firstSong) { playSong(firstSong); return; }
+      } catch (_) {}
+    }
+  }
 }
 
 /* transport + scrubber */
@@ -832,6 +898,114 @@ async function downloadSong() {
 }
 $("song-download").addEventListener("click", downloadSong);
 $("song-url").addEventListener("keydown", (e) => { if (e.key === "Enter") downloadSong(); });
+
+/* --------------------------------------------------------- expand mode */
+async function renderExpandedItems() {
+  const myToken = ++expandRenderToken;
+  const chain = getChain(state.current);
+  const chainList = chain || [state.current];
+
+  $("songs-title").innerHTML = esc(state.current || "—");
+  if ($("songs-eyebrow")) $("songs-eyebrow").textContent = "Full Setlist";
+  if ($("songs-desc")) $("songs-desc").style.display = "none";
+  $("songs-sub").textContent = "";
+
+  const list = $("song-list");
+  list.innerHTML = "";
+
+  for (const plName of chainList) {
+    const hdr = document.createElement("div");
+    hdr.className = "divider chain-divider";
+    hdr.innerHTML = `<div class="line"></div><span class="label">${esc(plName)}</span><div class="line"></div>`;
+    list.appendChild(hdr);
+
+    let items;
+    if (plName === state.current) {
+      items = state.items;
+    } else {
+      try {
+        const data = await api("GET", `/api/playlists/${encodeURIComponent(plName)}`);
+        if (myToken !== expandRenderToken) return;
+        items = data.items;
+      } catch (_) { items = []; }
+    }
+    for (const it of items) {
+      if (it.type === "divider") {
+        list.appendChild(dividerEl(it, false));
+      } else {
+        list.appendChild(songEl(it));
+      }
+    }
+  }
+}
+
+async function toggleExpand() {
+  expanded = !expanded;
+  document.body.classList.toggle("expanded", expanded);
+  const pb = $("player-body");
+  const btn = $("expand-btn");
+  if (expanded) {
+    pb.style.justifyContent = "flex-start";
+    btn.textContent = "⤡";
+    btn.title = "Collapse view";
+    btn.classList.add("active");
+    await renderExpandedItems();
+  } else {
+    pb.style.justifyContent = "center";
+    btn.textContent = "⤢";
+    btn.title = "Expand view";
+    btn.classList.remove("active");
+    renderItems();
+  }
+}
+$("expand-btn").addEventListener("click", toggleExpand);
+
+/* --------------------------------------------------------- lock screen */
+function dismissLock() {
+  $("lock-modal").classList.remove("show");
+}
+
+function showLockPrompt() {
+  $("lock-password").value = "";
+  $("lock-status").textContent = "";
+  $("lock-status").classList.remove("err");
+  $("lock-modal").classList.add("show");
+  setTimeout(() => $("lock-password").focus(), 50);
+}
+
+function tryUnlock() {
+  if ($("lock-password").value === LOCK_PASSWORD) {
+    locked = false;
+    $("lock-modal").classList.remove("show");
+    $("lock-btn").classList.remove("active");
+    $("lock-btn").title = "Lock screen";
+  } else {
+    $("lock-status").textContent = "Incorrect password.";
+    $("lock-status").classList.add("err");
+    $("lock-password").value = "";
+    setTimeout(() => $("lock-password").focus(), 0);
+  }
+}
+
+// Capture-phase listener — intercepts all clicks when locked
+document.addEventListener("click", (e) => {
+  if (!locked) return;
+  if ($("lock-modal").contains(e.target)) return;
+  e.stopImmediatePropagation();
+  e.preventDefault();
+  showLockPrompt();
+}, true);
+
+$("lock-btn").addEventListener("click", () => {
+  if (locked) return;
+  locked = true;
+  $("lock-btn").classList.add("active");
+  $("lock-btn").title = "Locked — click to unlock";
+});
+$("lock-submit").addEventListener("click", tryUnlock);
+$("lock-password").addEventListener("keydown", (e) => { if (e.key === "Enter") tryUnlock(); });
+$("lock-close").addEventListener("click", dismissLock);
+$("lock-modal").addEventListener("click", (e) => { if (e.target === $("lock-modal")) dismissLock(); });
 
 /* ------------------------------------------------------------- startup */
 loadPlaylists();
