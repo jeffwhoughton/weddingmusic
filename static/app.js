@@ -189,33 +189,110 @@ function computeTransitionDuration(item) {
   return base + (Math.random() * 3 - 1.5);
 }
 
-// Fetch + decode the audio offline and find the lowest-RMS 0.5 s window
-// between 60 % and 88 % of the song duration. Returns the window centre time
-// in seconds, or null on failure.
+// Fetch + decode the audio offline, strip bass (HPF ~250 Hz) to expose
+// vocals/mids, then find a spot in the 60–88 % range where a sustained
+// active passage drops sharply into quiet — i.e. just after a vocal pause.
+// Falls back to the quietest window if no clear drop is found.
+// Returns the time in seconds, or null on failure.
 async function analyzeDipTime(item) {
   const duration = item.duration || 0;
   if (duration < 10) return null;
   try {
     const resp = await fetch(item.audio_url);
     if (!resp.ok) return null;
-    const buf = await resp.arrayBuffer();
+    const arrayBuf = await resp.arrayBuffer();
     const tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
     let decoded;
-    try { decoded = await tmpCtx.decodeAudioData(buf); }
+    try { decoded = await tmpCtx.decodeAudioData(arrayBuf); }
     finally { tmpCtx.close(); }
-    const sr = decoded.sampleRate;
-    const data = decoded.getChannelData(0);
-    const winSamples = Math.floor(0.5 * sr);
-    const startSample = Math.floor(duration * 0.60 * sr);
-    const endSample   = Math.floor(duration * 0.88 * sr);
-    let minRms = Infinity, bestTime = duration * 0.65;
-    for (let s = startSample; s < Math.min(endSample, data.length - winSamples); s += winSamples) {
-      let sq = 0;
-      for (let i = s; i < s + winSamples; i++) sq += data[i] * data[i];
-      const rms = Math.sqrt(sq / winSamples);
-      if (rms < minRms) { minRms = rms; bestTime = (s + winSamples / 2) / sr; }
+
+    const sr  = decoded.sampleRate;
+    const len = decoded.length;
+
+    // Mix down to mono
+    const mono = new Float32Array(len);
+    for (let c = 0; c < decoded.numberOfChannels; c++) {
+      const ch = decoded.getChannelData(c);
+      for (let i = 0; i < len; i++) mono[i] += ch[i];
     }
-    return bestTime;
+    if (decoded.numberOfChannels > 1) {
+      const nch = decoded.numberOfChannels;
+      for (let i = 0; i < len; i++) mono[i] /= nch;
+    }
+
+    // 1st-order IIR high-pass ~250 Hz — strips kick/bass, keeps vocals & mids
+    // α = RC / (RC + dt),  RC = 1 / (2π·fc)
+    const rc  = 1 / (2 * Math.PI * 250);
+    const alp = rc / (rc + 1 / sr);
+    const hpf = new Float32Array(len);
+    hpf[0] = mono[0];
+    for (let i = 1; i < len; i++) hpf[i] = alp * (hpf[i - 1] + mono[i] - mono[i - 1]);
+
+    // RMS in 0.1 s windows
+    const winSec = 0.1;
+    const winS   = Math.floor(winSec * sr);
+    const numW   = Math.floor(len / winS);
+    const rms    = new Float32Array(numW);
+    for (let w = 0; w < numW; w++) {
+      let sq = 0, s0 = w * winS;
+      for (let i = s0; i < s0 + winS; i++) sq += hpf[i] * hpf[i];
+      rms[w] = Math.sqrt(sq / winS);
+    }
+
+    // Smooth with ±0.3 s moving average
+    const smR = Math.ceil(0.3 / winSec);
+    const smo = new Float32Array(numW);
+    for (let w = 0; w < numW; w++) {
+      let sum = 0, cnt = 0;
+      for (let j = Math.max(0, w - smR); j <= Math.min(numW - 1, w + smR); j++) {
+        sum += rms[j]; cnt++;
+      }
+      smo[w] = sum / cnt;
+    }
+
+    // 70th-percentile RMS in the 50–90 % zone → "normal active" reference level
+    const refStart = Math.floor(duration * 0.50 / winSec);
+    const refEnd   = Math.floor(duration * 0.90 / winSec);
+    const refSlice = Array.from(smo.subarray(refStart, Math.min(refEnd, numW))).sort((a, b) => a - b);
+    const p70      = refSlice[Math.floor(refSlice.length * 0.70)] || 0.01;
+    const quietThr = p70 * 0.30;  // quieter than this = a genuine dip
+
+    // Scan 60–88 %: score each window as "quiet now + active just before"
+    // High score → the song just paused after singing/playing
+    const scanStart = Math.floor(duration * 0.60 / winSec);
+    const scanEnd   = Math.floor(duration * 0.88 / winSec);
+    const lookback  = Math.ceil(1.5 / winSec);   // 1.5 s preceding activity
+    const lookahead = Math.ceil(1.0 / winSec);   // 1.0 s of continued quiet
+
+    let bestScore = -1, bestTime = duration * 0.65;
+    for (let w = scanStart + lookback; w < Math.min(scanEnd, numW - lookahead); w++) {
+      if (smo[w] > quietThr * 1.5) continue;  // not quiet enough
+
+      let before = 0;
+      for (let j = w - lookback; j < w; j++) before += smo[j];
+      before /= lookback;
+
+      let after = 0;
+      for (let j = w; j < w + lookahead; j++) after += smo[j];
+      after /= lookahead;
+
+      // Require the preceding passage to have been meaningfully active
+      if (before < p70 * 0.40) continue;
+
+      // Score = magnitude of drop × how active the passage was
+      const score = (before - after) * (before / (p70 + 1e-9));
+      if (score > bestScore) { bestScore = score; bestTime = w * winSec; }
+    }
+
+    // Fallback: pure quietest window in the 60–88 % band
+    if (bestScore <= 0) {
+      let minV = Infinity;
+      for (let w = scanStart; w < Math.min(scanEnd, numW); w++) {
+        if (smo[w] < minV) { minV = smo[w]; bestTime = w * winSec; }
+      }
+    }
+
+    return Math.max(duration * 0.60, Math.min(duration * 0.88, bestTime));
   } catch (_) { return null; }
 }
 
