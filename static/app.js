@@ -3,7 +3,8 @@
  * ===================================================================== */
 
 const EMOJIS = ["💞", "✨", "🍂", "🕺"];
-const audio = document.getElementById("audio");
+const audio  = document.getElementById("audio");
+const audiob = document.getElementById("audio-b");
 
 const state = {
   playlists: [],
@@ -40,6 +41,185 @@ let toastT;
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+/* ====================================================== DJ Transition ===== */
+let audioCtx = null;
+let srcA = null, srcB = null;
+let gainA = null, gainB = null;
+let hpfA  = null, lpfB  = null;
+
+const transState = {
+  active:     false,   // transition currently running
+  armed:      false,   // prefetch triggered, waiting to start
+  plannedDur: null,    // transition duration for current song (computed once)
+  duration:   0,
+  nextItem:   null,
+  completeTimer: null,
+};
+
+function initWebAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+  // Deck A — main audio element
+  srcA  = audioCtx.createMediaElementSource(audio);
+  gainA = audioCtx.createGain();  gainA.gain.value = 1.0;
+  hpfA  = audioCtx.createBiquadFilter();
+  hpfA.type = "highpass"; hpfA.frequency.value = 20; hpfA.Q.value = 0.5;
+  srcA.connect(hpfA); hpfA.connect(gainA); gainA.connect(audioCtx.destination);
+
+  // Deck B — incoming / transition audio
+  srcB  = audioCtx.createMediaElementSource(audiob);
+  gainB = audioCtx.createGain();  gainB.gain.value = 0.0;
+  lpfB  = audioCtx.createBiquadFilter();
+  lpfB.type = "lowpass"; lpfB.frequency.value = 280; lpfB.Q.value = 2.2;
+  srcB.connect(lpfB); lpfB.connect(gainB); gainB.connect(audioCtx.destination);
+}
+
+function computeTransitionDuration(item) {
+  // Scales with song length: ~6 % of duration, clamped 6–16 s, ±1.5 s jitter
+  const dur  = item.duration || 0;
+  const base = Math.max(6, Math.min(16, dur * 0.06));
+  return base + (Math.random() * 3 - 1.5);
+}
+
+async function getNextSong() {
+  const p = state.playing;
+  if (!p) return null;
+  let items;
+  if (p.item.playlist === state.current) items = state.items;
+  else items = (await api("GET", `/api/playlists/${encodeURIComponent(p.item.playlist)}`)).items;
+  const idx = items.findIndex((x) => x.type === "song" && sigOf(x) === p.sig);
+  if (idx < 0) return null;
+  for (let i = idx + 1; i < items.length; i++) {
+    if (items[i].type === "song") return items[i];
+  }
+  return null;
+}
+
+function startTransition(nextItem) {
+  if (transState.active) return;
+  if (!audioCtx) initWebAudio();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+
+  const T   = transState.plannedDur;
+  const now = audioCtx.currentTime;
+  transState.active   = true;
+  transState.duration = T;
+  transState.nextItem = nextItem;
+
+  // -- Deck A out: HPF sweeps bass away, gain S-curves to 0 --
+  hpfA.frequency.cancelScheduledValues(now);
+  hpfA.frequency.setValueAtTime(20, now);
+  hpfA.frequency.exponentialRampToValueAtTime(500,  now + T * 0.55);
+  hpfA.frequency.exponentialRampToValueAtTime(3500, now + T);
+
+  gainA.gain.cancelScheduledValues(now);
+  gainA.gain.setValueAtTime(1.0, now);
+  gainA.gain.setValueAtTime(1.0, now + T * 0.18);   // hold full briefly
+  gainA.gain.linearRampToValueAtTime(0.5, now + T * 0.6);
+  gainA.gain.linearRampToValueAtTime(0.0, now + T * 0.95);
+
+  // Outgoing track drifts slightly faster (classic DJ spin-out)
+  const rampStart = Date.now(), rampMs = T * 750;
+  const rateInterval = setInterval(() => {
+    const t = Date.now() - rampStart;
+    if (t >= rampMs || !transState.active) { clearInterval(rateInterval); return; }
+    audio.playbackRate = 1 + (t / rampMs) * 0.09;
+  }, 50);
+
+  // -- Deck B in: pre-load, LPF resonant sweep opens up, gain fades in --
+  audiob.src = nextItem.audio_url;
+  audiob.volume = 1;
+  audiob.playbackRate = 1.0;
+  audiob.play().catch(() => {});
+
+  lpfB.frequency.cancelScheduledValues(now);
+  lpfB.frequency.setValueAtTime(280, now);
+  lpfB.frequency.setValueAtTime(280, now + T * 0.08);
+  lpfB.frequency.exponentialRampToValueAtTime(2200,  now + T * 0.5);
+  lpfB.frequency.exponentialRampToValueAtTime(20000, now + T * 0.78);
+
+  gainB.gain.cancelScheduledValues(now);
+  gainB.gain.setValueAtTime(0.0, now);
+  gainB.gain.setValueAtTime(0.0, now + T * 0.1);
+  gainB.gain.linearRampToValueAtTime(0.35, now + T * 0.38);
+  gainB.gain.linearRampToValueAtTime(0.75, now + T * 0.68);
+  gainB.gain.linearRampToValueAtTime(1.0,  now + T * 0.9);
+
+  // -- Visuals --
+  $("player").classList.add("transitioning");
+  $("scrub-fill").classList.add("transitioning");
+  $("next-title").textContent  = nextItem.title;
+  $("next-artist").textContent = nextItem.artist;
+  const na = $("next-art");
+  na.style.display = "";
+  na.src = nextItem.art_url;
+  na.onerror = () => { na.style.display = "none"; };
+  $("next-preview").style.display = "";
+
+  transState.completeTimer = setTimeout(() => completeTransition(nextItem), T * 1000);
+}
+
+function completeTransition(nextItem) {
+  if (!transState.active) return;
+  transState.active = false;
+  clearTimeout(transState.completeTimer);
+
+  const bTime = audiob.currentTime;
+  audiob.pause();
+
+  const now = audioCtx ? audioCtx.currentTime : 0;
+  if (audioCtx) {
+    hpfA.frequency.cancelScheduledValues(now); hpfA.frequency.setValueAtTime(20, now);
+    gainA.gain.cancelScheduledValues(now);     gainA.gain.setValueAtTime(1.0, now);
+    gainB.gain.cancelScheduledValues(now);     gainB.gain.setValueAtTime(0.0, now);
+    lpfB.frequency.cancelScheduledValues(now); lpfB.frequency.setValueAtTime(280, now);
+  }
+  audio.playbackRate = 1.0;
+
+  // Hand deck B content over to deck A
+  state.playing = { sig: sigOf(nextItem), item: nextItem };
+  transState.armed      = false;
+  transState.plannedDur = null;
+  audio.src = nextItem.audio_url;
+  audio.addEventListener("loadedmetadata", function once() {
+    audio.removeEventListener("loadedmetadata", once);
+    try { audio.currentTime = bTime; } catch (_) {}
+    audio.play().catch(() => {});
+  });
+  audiob.src = "";
+
+  $("player").classList.remove("transitioning");
+  $("scrub-fill").classList.remove("transitioning");
+  $("next-preview").style.display = "none";
+
+  renderPlayer();
+  renderItems();
+  loadOccurrences(nextItem);
+  loadPlaylists();
+}
+
+function abortTransition() {
+  if (!transState.active && !transState.armed) return;
+  transState.active = false;
+  transState.armed  = false;
+  clearTimeout(transState.completeTimer);
+  audiob.pause(); audiob.src = "";
+  if (audioCtx) {
+    const now = audioCtx.currentTime;
+    hpfA.frequency.cancelScheduledValues(now); hpfA.frequency.setValueAtTime(20, now);
+    gainA.gain.cancelScheduledValues(now);     gainA.gain.setValueAtTime(1.0, now);
+    gainB.gain.cancelScheduledValues(now);     gainB.gain.setValueAtTime(0.0, now);
+    lpfB.frequency.cancelScheduledValues(now); lpfB.frequency.setValueAtTime(280, now);
+  }
+  audio.playbackRate = 1.0;
+  $("player").classList.remove("transitioning");
+  $("scrub-fill").classList.remove("transitioning");
+  $("next-preview").style.display = "none";
+  transState.nextItem   = null;
+  transState.plannedDur = null;
 }
 
 /* ----------------------------------------------------- load + render col1 */
@@ -345,6 +525,11 @@ async function moveToPlaylist(target) {
 
 /* --------------------------------------------------------------- player */
 function playSong(it) {
+  abortTransition();
+  transState.armed      = false;
+  transState.plannedDur = null;
+  initWebAudio();
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
   state.playing = { sig: sigOf(it), item: it };
   audio.src = it.audio_url;
   audio.play().catch(() => {});
@@ -476,12 +661,28 @@ $("prev-btn").addEventListener("click", () => {
 });
 audio.addEventListener("play",  () => { $("play-btn").textContent = "⏸"; });
 audio.addEventListener("pause", () => { $("play-btn").textContent = "▶"; });
-audio.addEventListener("ended", () => advance(+1));
+audio.addEventListener("ended", () => { if (transState.active) return; advance(+1); });
 audio.addEventListener("timeupdate", () => {
   const d = audio.duration || 0;
   $("scrub-fill").style.width = d ? `${(audio.currentTime / d) * 100}%` : "0%";
   $("t-cur").textContent = fmt(audio.currentTime);
   $("t-dur").textContent = fmt(d);
+
+  // DJ transition arm: trigger when within plannedDur seconds of end
+  if (!transState.armed && !transState.active && d > 0 && isFinite(d) && state.playing) {
+    if ($("transition-enabled").checked) {
+      if (transState.plannedDur === null)
+        transState.plannedDur = computeTransitionDuration(state.playing.item);
+      const remaining = d - audio.currentTime;
+      if (remaining > 0 && remaining <= transState.plannedDur) {
+        transState.armed = true;
+        getNextSong().then((next) => {
+          if (next && transState.armed && !transState.active) startTransition(next);
+          else transState.armed = false;
+        });
+      }
+    }
+  }
 });
 $("scrub-track").addEventListener("click", (e) => {
   const r = e.currentTarget.getBoundingClientRect();
