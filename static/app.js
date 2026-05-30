@@ -2,19 +2,6 @@
  *  Playlist Studio — frontend logic
  * ===================================================================== */
 
-const PLAYLIST_DESCRIPTIONS = {
-  "Pizza Party": "Monday, 5pm - Chill and hang.",
-  "Pizza Party 2": "Monday, 7pm - A bit more upbeat.",
-  "The Church": "Tuesday, 1pm - Songs for the band.",
-  "Cocktails + Din": "Tuesday, 5pm - Love songs for dinner.",
-  "Wedding Reception": "Tuesday, 8pm - The party.",
-  "Reception 2": "Tuesday, 10pm - More party.",
-  "Reception 3": "Tuesday, Midnight - More niche / chill.",
-  "End The Night": "Tuesday, Late - Wind it down.",
-  "Extra Songs": "Backups",
-  "Trash": "Things to delete."
-};
-
 const EMOJIS = ["💞", "✨", "🍂", "🕺"];
 const audio = document.getElementById("audio");
 
@@ -72,24 +59,8 @@ function renderPlaylists() {
     const el = document.createElement("div");
     el.className = "playlist-tile" + (p.name === state.current ? " active" : "");
     el.dataset.name = p.name;
-    
-    let fullDesc = PLAYLIST_DESCRIPTIONS[p.name] || "";
-    let timeStr = "";
-    let descStr = fullDesc;
-    if (fullDesc.includes(" - ")) {
-      const idx = fullDesc.indexOf(" - ");
-      timeStr = fullDesc.slice(0, idx);
-      descStr = fullDesc.slice(idx);
-    } else if (fullDesc) {
-      descStr = " - " + fullDesc;
-    }
-
-    const timeHtml = timeStr ? `<div class="pl-time eyebrow">${esc(timeStr)}</div>` : "";
-    const descHtml = descStr ? `<span class="pl-inline-desc">${esc(descStr)}</span>` : "";
-
     el.innerHTML = `
-      ${timeHtml}
-      <div class="pl-name">${esc(p.name)}${descHtml}</div>
+      <div class="pl-name">${esc(p.name)}</div>
       <div class="pl-meta"><b>${p.song_count}</b> song${p.song_count===1?"":"s"} · ${p.duration_human}</div>`;
     el.addEventListener("click", () => selectPlaylist(p.name));
     // drop target for moving songs/dividers into this playlist
@@ -126,27 +97,7 @@ function selectedItems() {
 }
 
 function renderItems() {
-  let fullDesc = PLAYLIST_DESCRIPTIONS[state.current] || "";
-  let timeStr = "";
-  let descStr = fullDesc;
-  if (fullDesc.includes(" - ")) {
-    const idx = fullDesc.indexOf(" - ");
-    timeStr = fullDesc.slice(0, idx);
-    descStr = fullDesc.slice(idx);
-  } else if (fullDesc) {
-    descStr = " - " + fullDesc;
-  }
-
-  const descHtml = descStr ? `<span class="songs-inline-desc pl-inline-desc">${esc(descStr)}</span>` : "";
-  
-  $("songs-title").innerHTML = `${esc(state.current || "—")}${descHtml}`;
-  if ($("songs-eyebrow")) {
-    $("songs-eyebrow").textContent = timeStr || "Now editing";
-  }
-  if ($("songs-desc")) {
-    $("songs-desc").style.display = "none";
-  }
-
+  $("songs-title").textContent = state.current || "—";
   const songCount = state.items.filter((i) => i.type === "song").length;
   const pl = state.playlists.find((p) => p.name === state.current);
   $("songs-sub").textContent = pl ? `${songCount} songs · ${pl.duration_human}` : "";
