@@ -484,6 +484,32 @@ function selectedItems() {
   return state.items.filter((it) => state.selection.has(it.id));
 }
 
+/* ------------------------------------------------- scrollbar pip */
+function updateScrollPip() {
+  const pip = $("scroll-pip");
+  const list = $("song-list");
+  if (!pip || !list) return;
+  if (!state.playing || (!expanded && state.playing.item.playlist !== state.current)) {
+    pip.style.display = "none";
+    return;
+  }
+  const playingRow = list.querySelector(".row.playing");
+  if (!playingRow) {
+    pip.style.display = "none";
+    return;
+  }
+  const listRect = list.getBoundingClientRect();
+  const rowRect  = playingRow.getBoundingClientRect();
+  // Row centre position within the full scrollable content
+  const rowCentreInContent = list.scrollTop + (rowRect.top - listRect.top) + rowRect.height / 2;
+  const fraction = Math.max(0, Math.min(1, rowCentreInContent / list.scrollHeight));
+  // list.offsetTop is the distance from the top of #col-songs (which is position:relative)
+  // to the top of #song-list, mapping the fraction onto the visible scroll track height.
+  const pipTop = list.offsetTop + fraction * list.clientHeight - 10; // centre the 20px pip
+  pip.style.top = pipTop + "px";
+  pip.style.display = "block";
+}
+
 function renderItems() {
   if (expanded) { renderExpandedItems(); return; }
   let fullDesc = PLAYLIST_DESCRIPTIONS[state.current] || "";
@@ -575,6 +601,7 @@ function renderItems() {
       }
     }
   }
+  updateScrollPip();
 }
 
 function songEl(it) {
@@ -857,6 +884,7 @@ function renderPlayer() {
     b.addEventListener("click", () => setEmoji(em));
     opts.appendChild(b);
   }
+  updateScrollPip();
 }
 
 async function loadOccurrences(it) {
@@ -1183,6 +1211,7 @@ async function renderExpandedItems() {
   $("songs-sub").textContent = "";
 
   const list = $("song-list");
+  const savedScroll = list.scrollTop;
   list.innerHTML = "";
 
   for (const plName of chainList) {
@@ -1227,6 +1256,8 @@ async function renderExpandedItems() {
       }
     }
   }
+  list.scrollTop = savedScroll;
+  updateScrollPip();
 }
 
 /* -------------------------------------------------------- column layout */

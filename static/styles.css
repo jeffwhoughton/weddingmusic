@@ -750,6 +750,22 @@ body.expanded #col-songs {
   min-width: 0;
 }
 
+/* ------------------------------------------------ scroll pip (now-playing indicator on scrollbar) */
+#col-songs { position: relative; }
+
+#scroll-pip {
+  position: absolute;
+  right: 3px;          /* centers a 3px pip within the 9px custom scrollbar track */
+  width: 3px;
+  height: 20px;
+  border-radius: 2px;
+  background: var(--gold);
+  opacity: 0.55;
+  pointer-events: none;
+  display: none;
+  transition: top .18s ease;
+}
+
 /* ------------------------------------------------------ lock modal z-index */
 #lock-modal { z-index: 500; }
 .modal { position: relative; }
