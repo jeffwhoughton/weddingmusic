@@ -1506,6 +1506,7 @@ async function toggleExpand() {
       pb.style.margin = "";
     };
     app.addEventListener("transitionend", onEnd);
+    renderPlaylists();
     renderItems();
   }
 }
