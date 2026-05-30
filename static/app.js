@@ -42,6 +42,14 @@ let locked = false;           // lock screen mode
 let fadeToPause = false;      // pause at start of next track instead of playing
 const LOCK_PASSWORD = "1235";
 
+// Go Here Next / Queue Next state
+const queueState = {
+  mode: null,           // null | "goHereNext" | "queueNext"
+  item: null,           // the targeted song item
+  returnTo: null,       // for queueNext: natural successor to resume after the queued item
+  playingQueued: false, // true while the queued item is the currently-playing song
+};
+
 /* ---------------------------------------------------------------- utils */
 const $ = (id) => document.getElementById(id);
 const api = async (method, path, body) => {
@@ -68,6 +76,50 @@ let toastT;
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
   clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+function clearQueueState() {
+  queueState.mode = null;
+  queueState.item = null;
+  queueState.returnTo = null;
+  queueState.playingQueued = false;
+}
+
+function setGoHereNext(it) {
+  const isActive = queueState.mode === "goHereNext" && queueState.item && sigOf(queueState.item) === sigOf(it);
+  if (isActive) {
+    clearQueueState();
+    toast("Go Here Next cleared.");
+  } else {
+    clearQueueState();
+    queueState.mode = "goHereNext";
+    queueState.item = it;
+    toast("Go Here Next");
+  }
+  renderItems();
+  updateNextPreview();
+}
+
+function setQueueNext(it) {
+  const isActive = queueState.mode === "queueNext" && queueState.item && sigOf(queueState.item) === sigOf(it);
+  if (isActive) {
+    queueState.mode = null;
+    queueState.item = null;
+    toast("Queue Next cleared.");
+  } else {
+    const keepPlayingQueued = queueState.playingQueued;
+    const keepReturnTo = queueState.returnTo;
+    clearQueueState();
+    queueState.mode = "queueNext";
+    queueState.item = it;
+    if (keepPlayingQueued) {
+      queueState.playingQueued = true;
+      queueState.returnTo = keepReturnTo;
+    }
+    toast("Queue Next");
+  }
+  renderItems();
+  updateNextPreview();
 }
 
 /* -------------------------------------------------------- linked chains */
@@ -134,7 +186,7 @@ function computeTransitionDuration(item) {
   return base + (Math.random() * 3 - 1.5);
 }
 
-async function getNextSong() {
+async function getNaturalNextSong() {
   const p = state.playing;
   if (!p) return null;
   let items;
@@ -155,6 +207,32 @@ async function getNextSong() {
     } catch (_) {}
   }
   return null;
+}
+
+async function getNextSong() {
+  if (queueState.mode === "goHereNext" && queueState.item) return queueState.item;
+  if (queueState.mode === "queueNext"  && queueState.item) return queueState.item;
+  if (queueState.playingQueued && queueState.returnTo)     return queueState.returnTo;
+  return getNaturalNextSong();
+}
+
+// Updates queue state when nextItem is about to become the playing song.
+// Must be called before state.playing is updated so getNaturalNextSong() still
+// sees the outgoing song when computing returnTo.
+async function consumeQueueForNextItem(nextItem) {
+  const sig = sigOf(nextItem);
+  if (queueState.mode === "goHereNext" && queueState.item && sigOf(queueState.item) === sig) {
+    clearQueueState();
+  } else if (queueState.mode === "queueNext" && queueState.item && sigOf(queueState.item) === sig) {
+    queueState.mode = null;
+    queueState.item = null;
+    if (!queueState.playingQueued) {
+      queueState.returnTo = await getNaturalNextSong();
+      queueState.playingQueued = true;
+    }
+  } else if (queueState.playingQueued) {
+    clearQueueState();
+  }
 }
 
 function startTransition(nextItem) {
@@ -224,7 +302,7 @@ function startTransition(nextItem) {
   transState.completeTimer = setTimeout(() => completeTransition(nextItem), tMs);
 }
 
-function completeTransition(nextItem) {
+async function completeTransition(nextItem) {
   if (!transState.active) return;
   transState.active = false;
   clearTimeout(transState.completeTimer);
@@ -262,6 +340,9 @@ function completeTransition(nextItem) {
   audiob.pause();
   audiob.src = "";
 
+  // Update queue state before advancing state.playing (getNaturalNextSong still
+  // sees the outgoing song here, so returnTo is computed correctly).
+  await consumeQueueForNextItem(nextItem);
   state.playing = { sig: sigOf(nextItem), item: nextItem };
   transState.armed      = false;
   transState.plannedDur = null;
@@ -438,17 +519,29 @@ function renderItems() {
   // DOM reuse optimization to prevent image reloading on moves or metadata updates
   const oldSongs = new Map();
   for (const child of Array.from(list.children)) {
-    if (child.classList.contains("row") && child.__item) {
+    if (child.classList.contains("row") && child.__item && !child.classList.contains("ghost-row")) {
       oldSongs.set(sigOf(child.__item), child);
     }
   }
 
+  // Precompute GHN fading range and QN ghost item
+  const _playingSig  = state.playing ? state.playing.sig : null;
+  const _ghnSig      = (queueState.mode === "goHereNext" && queueState.item) ? sigOf(queueState.item) : null;
+  const _qnGhostItem = (queueState.mode === "queueNext"  && queueState.item) ? queueState.item : null;
+  let _playIdx = -1, _ghnIdx = -1;
+  if (_playingSig) _playIdx = state.items.findIndex(x => x.type === "song" && sigOf(x) === _playingSig);
+  if (_ghnSig)     _ghnIdx  = state.items.findIndex(x => x.type === "song" && sigOf(x) === _ghnSig);
+  const _doFade = _playIdx >= 0 && _ghnIdx > _playIdx;
+
   list.innerHTML = "";
-  for (const it of state.items) {
+  for (let _i = 0; _i < state.items.length; _i++) {
+    const it = state.items[_i];
     if (it.type === "divider") {
       list.appendChild(dividerEl(it, it.id === loneDivider));
     } else {
       const sig = sigOf(it);
+      const isBetween = _doFade && _i > _playIdx && _i < _ghnIdx;
+      const isPlaying  = state.playing && sig === state.playing.sig;
       let el = oldSongs.get(sig);
       if (el) {
         // Reuse
@@ -456,15 +549,29 @@ function renderItems() {
         el.dataset.id = it.id;
         el.querySelector(".pos").textContent = it.position;
         el.querySelector(".emoji").textContent = it.emoji || "";
-        
+
         const isSelected = state.selection.has(it.id);
         el.querySelector(".chk").checked = isSelected;
-        
-        const isPlaying = state.playing && sig === state.playing.sig;
-        el.className = "row" + (isSelected ? " selected" : "") + (isPlaying ? " playing" : "");
+
+        const isGHN = queueState.mode === "goHereNext" && queueState.item && sigOf(queueState.item) === sig;
+        const isQN  = queueState.mode === "queueNext"  && queueState.item && sigOf(queueState.item) === sig;
+        el.className = "row"
+          + (isSelected ? " selected"    : "")
+          + (isPlaying  ? " playing"     : "")
+          + (isBetween  ? " ghn-skipped" : "");
+        const ghnBtn = el.querySelector(".ghn-btn");
+        const qnBtn  = el.querySelector(".qn-btn");
+        if (ghnBtn) ghnBtn.classList.toggle("active", isGHN);
+        if (qnBtn)  qnBtn.classList.toggle("active",  isQN);
         list.appendChild(el);
       } else {
-        list.appendChild(songEl(it));
+        const el2 = songEl(it);
+        if (isBetween) el2.classList.add("ghn-skipped");
+        list.appendChild(el2);
+      }
+      // Insert Queue Next ghost immediately after the currently-playing row
+      if (_qnGhostItem && isPlaying) {
+        list.appendChild(ghostQueueNextEl(_qnGhostItem));
       }
     }
   }
@@ -480,6 +587,8 @@ function songEl(it) {
   row.dataset.id = it.id;
 
   const checked = state.selection.has(it.id) ? "checked" : "";
+  const isGHN = queueState.mode === "goHereNext" && queueState.item && sigOf(queueState.item) === sigOf(it);
+  const isQN  = queueState.mode === "queueNext"  && queueState.item && sigOf(queueState.item) === sigOf(it);
   row.innerHTML = `
     <input type="checkbox" class="chk" ${checked}>
     <span class="pos">${it.position}</span>
@@ -489,6 +598,8 @@ function songEl(it) {
       <div class="title">${esc(it.title)}</div>
       <div class="artist">${esc(it.artist)}</div>
     </div>
+    <button class="row-act ghn-btn${isGHN ? " active" : ""}" title="Go Here Next">↩</button>
+    <button class="row-act qn-btn${isQN  ? " active" : ""}" title="Queue Next">+</button>
     <span class="dur">${it.duration_human}</span>`;
 
   // cover art with graceful placeholder
@@ -502,6 +613,12 @@ function songEl(it) {
   // play when clicking the body of the row
   row.querySelector(".meta").addEventListener("click", () => playSong(row.__item));
   img.addEventListener("click", () => playSong(row.__item));
+  row.querySelector(".ghn-btn").addEventListener("click", (e) => {
+    e.stopPropagation(); setGoHereNext(row.__item);
+  });
+  row.querySelector(".qn-btn").addEventListener("click", (e) => {
+    e.stopPropagation(); setQueueNext(row.__item);
+  });
 
   if (!expanded) attachDrag(row);
   return row;
@@ -511,6 +628,28 @@ function placeholderArt() {
   const d = document.createElement("div");
   d.className = "art placeholder"; d.textContent = "♪";
   return d;
+}
+
+function ghostQueueNextEl(it) {
+  const row = document.createElement("div");
+  row.className = "row ghost-row";
+  // Note: no __item so DOM-reuse map ignores it
+  row.innerHTML = `
+    <div class="ghost-indent"></div>
+    <img class="art" alt="">
+    <div class="meta">
+      <div class="title">${esc(it.title)}</div>
+      <div class="artist">${esc(it.artist)}</div>
+    </div>
+    <button class="row-act qn-btn active" title="Queue Next">+</button>
+    <span class="dur">${it.duration_human}</span>`;
+  const img = row.querySelector(".art");
+  img.src = it.art_url;
+  img.onerror = () => { img.replaceWith(placeholderArt()); };
+  row.querySelector(".qn-btn").addEventListener("click", (e) => {
+    e.stopPropagation(); setQueueNext(it);
+  });
+  return row;
 }
 
 function dividerEl(it, editing) {
@@ -784,6 +923,37 @@ function resyncPlaying() {
 async function advance(dir) {
   const p = state.playing;
   if (!p) return;
+
+  if (dir > 0) {
+    // Go Here Next intercept
+    if (queueState.mode === "goHereNext" && queueState.item) {
+      const target = queueState.item;
+      clearQueueState();
+      playSong(target);
+      return;
+    }
+    // Queue Next intercept
+    if (queueState.mode === "queueNext" && queueState.item) {
+      const target = queueState.item;
+      const wasQueued = queueState.playingQueued;
+      queueState.mode = null;
+      queueState.item = null;
+      if (!wasQueued) {
+        queueState.returnTo = await getNaturalNextSong();
+        queueState.playingQueued = true;
+      }
+      playSong(target);
+      return;
+    }
+    // Return to natural position after queued song finishes
+    if (queueState.playingQueued) {
+      const target = queueState.returnTo;
+      clearQueueState();
+      if (target) { playSong(target); return; }
+      // fall through to natural advance if no returnTo
+    }
+  }
+
   // fetch the freshest copy of the playing playlist (filenames may have changed)
   let items;
   if (p.item.playlist === state.current) items = state.items;
@@ -814,7 +984,26 @@ function onAudioPlay()  { $("play-btn").textContent = "⏸"; }
 function onAudioPause() { $("play-btn").textContent = "▶"; }
 
 async function advanceAndPause() {
-  const next = await getNextSong();
+  let next;
+  if (queueState.mode === "goHereNext" && queueState.item) {
+    next = queueState.item;
+    clearQueueState();
+  } else if (queueState.mode === "queueNext" && queueState.item) {
+    next = queueState.item;
+    const wasQueued = queueState.playingQueued;
+    queueState.mode = null;
+    queueState.item = null;
+    if (!wasQueued) {
+      queueState.returnTo = await getNaturalNextSong();
+      queueState.playingQueued = true;
+    }
+  } else if (queueState.playingQueued) {
+    next = queueState.returnTo;
+    clearQueueState();
+    if (!next) next = await getNaturalNextSong();
+  } else {
+    next = await getNaturalNextSong();
+  }
   if (!next) return;
   abortTransition();
   initWebAudio();
@@ -1012,11 +1201,29 @@ async function renderExpandedItems() {
         items = data.items;
       } catch (_) { items = []; }
     }
-    for (const it of items) {
+    // Compute GHN fading and QN ghost for this playlist segment
+    const _eSig    = state.playing ? state.playing.sig : null;
+    const _eGhnSig = (queueState.mode === "goHereNext" && queueState.item) ? sigOf(queueState.item) : null;
+    const _eQnItem = (queueState.mode === "queueNext"  && queueState.item) ? queueState.item : null;
+    let _ePIdx = -1, _eGIdx = -1;
+    if (_eSig)    _ePIdx = items.findIndex(x => x.type === "song" && sigOf(x) === _eSig);
+    if (_eGhnSig) _eGIdx = items.findIndex(x => x.type === "song" && sigOf(x) === _eGhnSig);
+    const _eFade = _ePIdx >= 0 && _eGIdx > _ePIdx;
+
+    for (let _ei = 0; _ei < items.length; _ei++) {
+      const it = items[_ei];
       if (it.type === "divider") {
         list.appendChild(dividerEl(it, false));
       } else {
-        list.appendChild(songEl(it));
+        const sig = sigOf(it);
+        const isBetween = _eFade && _ei > _ePIdx && _ei < _eGIdx;
+        const isPlaying  = state.playing && sig === state.playing.sig;
+        const el = songEl(it);
+        if (isBetween) el.classList.add("ghn-skipped");
+        list.appendChild(el);
+        if (_eQnItem && isPlaying) {
+          list.appendChild(ghostQueueNextEl(_eQnItem));
+        }
       }
     }
   }
