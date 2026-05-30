@@ -140,6 +140,20 @@ body::after {
 }
 .playlist-tile .pl-meta b { color: var(--cream-dim); font-weight: 600; }
 
+/* Now-playing pip in column 1 */
+.playlist-tile.now-playing::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  border-radius: 2px;
+  background: var(--gold);
+  opacity: 0.55;
+}
+
 /* ------------------------------------------------------- column 2: songs */
 .row {
   display: flex; align-items: center; gap: 12px;

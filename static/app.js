@@ -158,6 +158,9 @@ const transState = {
   completeTimer: null,
   completeAt:  null,   // wall-clock ms when transition should finish
   remainingMs: null,   // ms remaining when paused mid-transition
+  triggerAt:   null,   // song-time (seconds) at which to arm the transition
+  dipTime:     null,   // cached quiet-dip time (seconds) for current song
+  dipAnalyzing:false,  // true while async dip analysis is in-flight
 };
 
 function initWebAudio() {
@@ -184,6 +187,47 @@ function computeTransitionDuration(item) {
   const dur  = item.duration || 0;
   const base = Math.max(6, Math.min(16, dur * 0.06));
   return base + (Math.random() * 3 - 1.5);
+}
+
+// Fetch + decode the audio offline and find the lowest-RMS 0.5 s window
+// between 60 % and 88 % of the song duration. Returns the window centre time
+// in seconds, or null on failure.
+async function analyzeDipTime(item) {
+  const duration = item.duration || 0;
+  if (duration < 10) return null;
+  try {
+    const resp = await fetch(item.audio_url);
+    if (!resp.ok) return null;
+    const buf = await resp.arrayBuffer();
+    const tmpCtx = new (window.AudioContext || window.webkitAudioContext)();
+    let decoded;
+    try { decoded = await tmpCtx.decodeAudioData(buf); }
+    finally { tmpCtx.close(); }
+    const sr = decoded.sampleRate;
+    const data = decoded.getChannelData(0);
+    const winSamples = Math.floor(0.5 * sr);
+    const startSample = Math.floor(duration * 0.60 * sr);
+    const endSample   = Math.floor(duration * 0.88 * sr);
+    let minRms = Infinity, bestTime = duration * 0.65;
+    for (let s = startSample; s < Math.min(endSample, data.length - winSamples); s += winSamples) {
+      let sq = 0;
+      for (let i = s; i < s + winSamples; i++) sq += data[i] * data[i];
+      const rms = Math.sqrt(sq / winSamples);
+      if (rms < minRms) { minRms = rms; bestTime = (s + winSamples / 2) / sr; }
+    }
+    return bestTime;
+  } catch (_) { return null; }
+}
+
+// Apply a found dip time to transState.triggerAt if the playhead hasn't
+// already passed it and no transition is in progress.
+function applyDipToTransition(dipTime, d) {
+  if (dipTime === null || transState.active || transState.armed) return;
+  if (dipTime > audio.currentTime) {
+    transState.triggerAt = dipTime;
+  }
+  // If the playhead is already past the dip, leave triggerAt unchanged
+  // (natural d - plannedDur point stays in effect).
 }
 
 async function getNaturalNextSong() {
@@ -344,8 +388,11 @@ async function completeTransition(nextItem) {
   // sees the outgoing song here, so returnTo is computed correctly).
   await consumeQueueForNextItem(nextItem);
   state.playing = { sig: sigOf(nextItem), item: nextItem };
-  transState.armed      = false;
-  transState.plannedDur = null;
+  transState.armed       = false;
+  transState.plannedDur  = null;
+  transState.triggerAt   = null;
+  transState.dipTime     = null;
+  transState.dipAnalyzing = false;
 
   $("player").classList.remove("transitioning");
   $("scrub-fill").classList.remove("transitioning");
@@ -373,8 +420,9 @@ function abortTransition() {
   audio.playbackRate = 1.0;
   $("player").classList.remove("transitioning");
   $("scrub-fill").classList.remove("transitioning");
-  transState.nextItem   = null;
-  transState.plannedDur = null;
+  transState.nextItem    = null;
+  transState.plannedDur  = null;
+  transState.triggerAt   = null;
   transState.completeAt  = null;
   transState.remainingMs = null;
   updateNextPreview();
@@ -417,7 +465,9 @@ function renderPlaylists() {
   wrap.innerHTML = "";
   state.playlists.forEach((p, pIdx) => {
     const el = document.createElement("div");
-    el.className = "playlist-tile" + (p.name === state.current ? " active" : "");
+    el.className = "playlist-tile"
+      + (p.name === state.current ? " active" : "")
+      + (state.playing && state.playing.item.playlist === p.name && !expanded ? " now-playing" : "");
     el.dataset.name = p.name;
     
     let fullDesc = PLAYLIST_DESCRIPTIONS[p.name] || "";
@@ -840,8 +890,11 @@ async function moveToPlaylist(target) {
 /* --------------------------------------------------------------- player */
 function playSong(it) {
   abortTransition();
-  transState.armed      = false;
-  transState.plannedDur = null;
+  transState.armed       = false;
+  transState.plannedDur  = null;
+  transState.triggerAt   = null;
+  transState.dipTime     = null;
+  transState.dipAnalyzing = false;
   initWebAudio();
   if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
   state.playing = { sig: sigOf(it), item: it };
@@ -884,6 +937,7 @@ function renderPlayer() {
     b.addEventListener("click", () => setEmoji(em));
     opts.appendChild(b);
   }
+  if (!expanded) renderPlaylists();
   updateScrollPip();
 }
 
@@ -1072,24 +1126,39 @@ function onAudioTimeUpdate() {
   if (d > 0 && isFinite(d) && state.playing && transState.plannedDur === null
       && !transState.active && !transState.armed) {
     transState.plannedDur = computeTransitionDuration(state.playing.item);
+    transState.triggerAt  = d - transState.plannedDur;
+    // If shorten songs is on, kick off (or reuse) dip analysis
+    if ($("shorten-enabled").checked) {
+      if (transState.dipTime !== null) {
+        applyDipToTransition(transState.dipTime, d);
+      } else if (!transState.dipAnalyzing) {
+        transState.dipAnalyzing = true;
+        const _item = state.playing.item;
+        const _sig  = state.playing.sig;
+        analyzeDipTime(_item).then((t) => {
+          transState.dipAnalyzing = false;
+          if (!state.playing || state.playing.sig !== _sig) return;
+          transState.dipTime = t;
+          if ($("shorten-enabled").checked) applyDipToTransition(t, audio.duration || 0);
+        });
+      }
+    }
   }
 
   // Update transition start marker
   const marker = $("scrub-marker");
   if (!fadeToPause && $("transition-enabled").checked && d > 0 && isFinite(d)
-      && transState.plannedDur !== null && !transState.active) {
-    const markerFrac = Math.max(0, (d - transState.plannedDur) / d);
-    marker.style.left = `${markerFrac * 100}%`;
+      && transState.triggerAt !== null && !transState.active) {
+    marker.style.left = `${(transState.triggerAt / d) * 100}%`;
     marker.style.display = "";
   } else {
     marker.style.display = "none";
   }
 
-  // DJ transition arm: trigger when within plannedDur seconds of end
+  // DJ transition arm: trigger when playhead reaches triggerAt
   if (!transState.armed && !transState.active && d > 0 && isFinite(d) && state.playing) {
-    if (!fadeToPause && $("transition-enabled").checked && transState.plannedDur !== null) {
-      const remaining = d - audio.currentTime;
-      if (remaining > 0 && remaining <= transState.plannedDur) {
+    if (!fadeToPause && $("transition-enabled").checked && transState.triggerAt !== null) {
+      if (audio.currentTime >= transState.triggerAt) {
         transState.armed = true;
         getNextSong().then((next) => {
           if (next && transState.armed && !transState.active) startTransition(next);
@@ -1212,14 +1281,11 @@ async function renderExpandedItems() {
 
   const list = $("song-list");
   const savedScroll = list.scrollTop;
-  list.innerHTML = "";
+  const frag = document.createDocumentFragment();
 
+  // Pre-fetch all segment items so we can compute cross-playlist GHN fading
+  const segments = [];
   for (const plName of chainList) {
-    const hdr = document.createElement("div");
-    hdr.className = "divider chain-divider";
-    hdr.innerHTML = `<div class="line"></div><span class="label">${esc(plName)}</span><div class="line"></div>`;
-    list.appendChild(hdr);
-
     let items;
     if (plName === state.current) {
       items = state.items;
@@ -1230,32 +1296,70 @@ async function renderExpandedItems() {
         items = data.items;
       } catch (_) { items = []; }
     }
-    // Compute GHN fading and QN ghost for this playlist segment
-    const _eSig    = state.playing ? state.playing.sig : null;
-    const _eGhnSig = (queueState.mode === "goHereNext" && queueState.item) ? sigOf(queueState.item) : null;
-    const _eQnItem = (queueState.mode === "queueNext"  && queueState.item) ? queueState.item : null;
-    let _ePIdx = -1, _eGIdx = -1;
-    if (_eSig)    _ePIdx = items.findIndex(x => x.type === "song" && sigOf(x) === _eSig);
-    if (_eGhnSig) _eGIdx = items.findIndex(x => x.type === "song" && sigOf(x) === _eGhnSig);
-    const _eFade = _ePIdx >= 0 && _eGIdx > _ePIdx;
+    segments.push({ plName, items });
+  }
+  if (myToken !== expandRenderToken) return;
+
+  // Locate playing song and GHN target across all segments
+  const _playingSig = state.playing ? state.playing.sig : null;
+  const _ghnSig     = (queueState.mode === "goHereNext" && queueState.item) ? sigOf(queueState.item) : null;
+  const _qnItem     = (queueState.mode === "queueNext"  && queueState.item) ? queueState.item : null;
+  let playingSegIdx = -1, playingItemIdx = -1;
+  let ghnSegIdx     = -1, ghnItemIdx     = -1;
+  for (let si = 0; si < segments.length; si++) {
+    const { items } = segments[si];
+    if (_playingSig && playingSegIdx < 0) {
+      const idx = items.findIndex(x => x.type === "song" && sigOf(x) === _playingSig);
+      if (idx >= 0) { playingSegIdx = si; playingItemIdx = idx; }
+    }
+    if (_ghnSig && ghnSegIdx < 0) {
+      const idx = items.findIndex(x => x.type === "song" && sigOf(x) === _ghnSig);
+      if (idx >= 0) { ghnSegIdx = si; ghnItemIdx = idx; }
+    }
+  }
+  // Cross-playlist fade: GHN must come after playing (same segment later index, or later segment)
+  const crossFade = playingSegIdx >= 0 && ghnSegIdx >= 0 &&
+    (ghnSegIdx > playingSegIdx || (ghnSegIdx === playingSegIdx && ghnItemIdx > playingItemIdx));
+
+  for (let si = 0; si < segments.length; si++) {
+    const { plName, items } = segments[si];
+
+    const hdr = document.createElement("div");
+    hdr.className = "divider chain-divider";
+    hdr.innerHTML = `<div class="line"></div><span class="label">${esc(plName)}</span><div class="line"></div>`;
+    frag.appendChild(hdr);
 
     for (let _ei = 0; _ei < items.length; _ei++) {
       const it = items[_ei];
       if (it.type === "divider") {
-        list.appendChild(dividerEl(it, false));
+        frag.appendChild(dividerEl(it, false));
       } else {
         const sig = sigOf(it);
-        const isBetween = _eFade && _ei > _ePIdx && _ei < _eGIdx;
-        const isPlaying  = state.playing && sig === state.playing.sig;
+        const isPlaying = state.playing && sig === state.playing.sig;
+        let isBetween = false;
+        if (crossFade) {
+          if (si === playingSegIdx && si === ghnSegIdx) {
+            isBetween = _ei > playingItemIdx && _ei < ghnItemIdx;
+          } else if (si === playingSegIdx) {
+            isBetween = _ei > playingItemIdx;
+          } else if (si === ghnSegIdx) {
+            isBetween = _ei < ghnItemIdx;
+          } else if (si > playingSegIdx && si < ghnSegIdx) {
+            isBetween = true;
+          }
+        }
         const el = songEl(it);
         if (isBetween) el.classList.add("ghn-skipped");
-        list.appendChild(el);
-        if (_eQnItem && isPlaying) {
-          list.appendChild(ghostQueueNextEl(_eQnItem));
+        frag.appendChild(el);
+        if (_qnItem && isPlaying) {
+          frag.appendChild(ghostQueueNextEl(_qnItem));
         }
       }
     }
   }
+  // Single atomic swap — old content stays visible until the new content is ready
+  list.innerHTML = "";
+  list.appendChild(frag);
   list.scrollTop = savedScroll;
   updateScrollPip();
 }
@@ -1357,8 +1461,58 @@ $("lock-btn").addEventListener("click", () => {
 });
 $("lock-submit").addEventListener("click", tryUnlock);
 $("lock-password").addEventListener("keydown", (e) => { if (e.key === "Enter") tryUnlock(); });
+$("lock-password").addEventListener("input", () => {
+  if ($("lock-password").value === LOCK_PASSWORD) tryUnlock();
+});
 $("lock-close").addEventListener("click", dismissLock);
 $("lock-modal").addEventListener("click", (e) => { if (e.target === $("lock-modal")) dismissLock(); });
+
+/* ------------------------------------------------- transition / shorten toggles */
+$("transition-enabled").addEventListener("change", () => {
+  const on = $("transition-enabled").checked;
+  $("shorten-row").style.display = on ? "" : "none";
+  if (!on && $("shorten-enabled").checked) {
+    $("shorten-enabled").checked = false;
+    // Restore natural trigger point since transitions are now off
+    const d = audio.duration || 0;
+    if (transState.plannedDur !== null && d > 0 && !transState.active && !transState.armed) {
+      transState.triggerAt = d - transState.plannedDur;
+    }
+  }
+});
+
+function onShortenToggled() {
+  const on = $("shorten-enabled").checked;
+  const d  = audio.duration || 0;
+  if (!on) {
+    // Restore the natural d - plannedDur trigger point
+    if (transState.plannedDur !== null && d > 0 && !transState.active && !transState.armed) {
+      transState.triggerAt = d - transState.plannedDur;
+    }
+    return;
+  }
+  // Turning on — only touches the current song if a transition isn't already in flight
+  if (!state.playing || transState.active || transState.armed) return;
+  if (transState.dipTime !== null) {
+    // Already have a cached dip time — apply immediately (respects "already past it" rule)
+    applyDipToTransition(transState.dipTime, d);
+  } else if (!transState.dipAnalyzing && transState.plannedDur !== null) {
+    // plannedDur is set but no analysis started yet — kick one off now
+    transState.dipAnalyzing = true;
+    const _item = state.playing.item;
+    const _sig  = state.playing.sig;
+    analyzeDipTime(_item).then((t) => {
+      transState.dipAnalyzing = false;
+      if (!state.playing || state.playing.sig !== _sig) return;
+      transState.dipTime = t;
+      if ($("shorten-enabled").checked) applyDipToTransition(t, audio.duration || 0);
+    });
+  }
+  // If dipAnalyzing is already running, the .then() callback will apply
+  // the dip once it completes. If plannedDur is null (song just started),
+  // the onAudioTimeUpdate path will handle it when plannedDur is computed.
+}
+$("shorten-enabled").addEventListener("change", onShortenToggled);
 
 /* ------------------------------------------------------------- startup */
 setAppColumns();

@@ -1,0 +1,3 @@
+- Manually shorten some songs.
+
+- Make it so if the app is in expanded mode, and is unlocked for more than 30 seconds, it becomes locked.
