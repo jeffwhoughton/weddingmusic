@@ -939,22 +939,52 @@ async function renderExpandedItems() {
   }
 }
 
+/* -------------------------------------------------------- column layout */
+function setAppColumns() {
+  const app = document.querySelector('.app');
+  const totalW = app.offsetWidth;
+  if (!totalW) return;
+  if (expanded) {
+    const col2 = 380;
+    const col3 = Math.max(400, totalW - col2 - 1);
+    app.style.gridTemplateColumns = `0px ${col2}px ${col3}px`;
+  } else {
+    const col1 = 360, col3 = 480;
+    const col2 = Math.max(200, totalW - col1 - col3 - 2);
+    app.style.gridTemplateColumns = `${col1}px ${col2}px ${col3}px`;
+  }
+}
+
 async function toggleExpand() {
   expanded = !expanded;
-  document.body.classList.toggle("expanded", expanded);
   const pb = $("player-body");
   const btn = $("expand-btn");
   if (expanded) {
-    pb.style.justifyContent = "flex-start";
+    document.body.classList.add("expanded");
+    pb.style.maxWidth = ""; // let CSS control
     btn.textContent = "⤡";
     btn.title = "Collapse view";
     btn.classList.add("active");
+    setAppColumns();
     await renderExpandedItems();
   } else {
-    pb.style.justifyContent = "center";
+    // Pin max-width and centering so player contents stay centered during the column animation
+    pb.style.maxWidth = "540px";
+    pb.style.margin = "0 auto";
+    document.body.classList.remove("expanded");
     btn.textContent = "⤢";
     btn.title = "Expand view";
     btn.classList.remove("active");
+    setAppColumns();
+    // Release the pins once the grid column transition finishes
+    const app = document.querySelector(".app");
+    const onEnd = (e) => {
+      if (e.propertyName !== "grid-template-columns") return;
+      app.removeEventListener("transitionend", onEnd);
+      pb.style.maxWidth = "";
+      pb.style.margin = "";
+    };
+    app.addEventListener("transitionend", onEnd);
     renderItems();
   }
 }
@@ -1008,4 +1038,6 @@ $("lock-close").addEventListener("click", dismissLock);
 $("lock-modal").addEventListener("click", (e) => { if (e.target === $("lock-modal")) dismissLock(); });
 
 /* ------------------------------------------------------------- startup */
+setAppColumns();
+window.addEventListener('resize', setAppColumns);
 loadPlaylists();

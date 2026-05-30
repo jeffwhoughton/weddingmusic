@@ -67,6 +67,7 @@ body::after {
   grid-template-columns: 360px 1fr 480px;
   gap: 1px; background: var(--line);
   height: calc(100vh - 61px);
+  transition: grid-template-columns .42s cubic-bezier(.4,0,.2,1);
 }
 .col {
   background: var(--espresso-2);
@@ -167,7 +168,8 @@ body::after {
   appearance: none; width: 17px; height: 17px; flex: none;
   border: 1.5px solid var(--line-strong); border-radius: 5px;
   background: transparent; cursor: pointer; position: relative;
-  transition: border-color .15s, background .15s;
+  overflow: hidden; max-width: 17px;
+  transition: border-color .15s, background .15s, max-width .3s ease, opacity .22s ease, margin-right .3s ease;
 }
 .row .chk:hover { border-color: var(--gold); }
 .row .chk:checked { background: var(--gold); border-color: var(--gold); }
@@ -178,8 +180,13 @@ body::after {
 .row .pos {
   width: 22px; flex: none; text-align: right; font-size: 12px;
   color: var(--muted); font-variant-numeric: tabular-nums;
+  overflow: hidden; max-width: 22px;
+  transition: max-width .3s ease, opacity .22s ease, margin-right .3s ease;
 }
-.row .emoji { font-size: 17px; width: 22px; text-align: center; flex: none; }
+.row .emoji { font-size: 17px; width: 22px; text-align: center; flex: none;
+  overflow: hidden; max-width: 22px;
+  transition: max-width .3s ease, opacity .22s ease, margin-right .3s ease;
+}
 .row .art {
   width: 44px; height: 44px; flex: none; border-radius: 8px;
   object-fit: cover; background: var(--panel-2);
@@ -210,6 +217,8 @@ body::after {
   appearance: none; width: 17px; height: 17px; flex: none;
   border: 1.5px solid var(--line-strong); border-radius: 5px;
   background: transparent; cursor: pointer; position: relative;
+  overflow: hidden; max-width: 17px;
+  transition: max-width .3s ease, opacity .22s ease, margin-right .3s ease;
 }
 .divider .chk:checked { background: var(--rose); border-color: var(--rose); }
 .divider .chk:checked::after {
@@ -241,6 +250,8 @@ body::after {
 .add-bar {
   padding: 14px 18px; border-top: 1px solid var(--line);
   display: flex; flex-direction: column; gap: 8px; background: var(--espresso-2);
+  overflow: hidden; max-height: 140px;
+  transition: max-height .38s cubic-bezier(.4,0,.2,1), opacity .25s ease, padding .38s ease, border-color .38s ease;
 }
 .btn {
   font-family: 'Hanken Grotesk', sans-serif; font-size: 13.5px; font-weight: 600;
@@ -278,6 +289,8 @@ body::after {
 .player .np-artist { font-size: 14px; color: var(--cream-dim); margin-top: 4px; }
 .player .np-occ {
   font-size: 12px; color: var(--muted); margin-top: 8px; font-style: italic;
+  overflow: hidden; max-height: 40px;
+  transition: max-height .3s ease, opacity .22s ease;
 }
 
 /* scrubber */
@@ -321,7 +334,8 @@ body::after {
 .transport .play:active { transform: scale(.95); }
 
 /* emoji chooser */
-.emoji-pick { margin-top: 22px; }
+.emoji-pick { margin-top: 22px; overflow: hidden; max-height: 120px;
+  transition: max-height .3s ease, opacity .22s ease, margin-top .3s ease; }
 .emoji-pick .lbl {
   font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
   color: var(--muted); margin-bottom: 10px;
@@ -573,21 +587,39 @@ body::after {
   opacity: 0.9;
 }
 
-/* -------------------------------------------------------- expanded layout */
-.app {
-  transition: grid-template-columns .35s cubic-bezier(.4,0,.2,1);
+#col-songs .col-head {
+  overflow: hidden;
+  max-height: 160px;
+  transition: max-height .38s cubic-bezier(.4,0,.2,1), opacity .25s ease, padding .38s ease;
 }
-body.expanded .app {
-  grid-template-columns: 380px 1fr;
+body.expanded #col-songs .col-head {
+  max-height: 0;
+  opacity: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  pointer-events: none;
+}
+
+/* -------------------------------------------------------- expanded layout */
+/* grid-template-columns is driven by JS with explicit px values so the
+   browser can interpolate. The transition is on .app (declared above).    */
+
+#col-playlists {
+  overflow: hidden;
+  transition: opacity .28s ease;
 }
 body.expanded #col-playlists {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
 }
 body.expanded .row .chk,
 body.expanded .divider .chk,
 body.expanded .row .pos,
 body.expanded .row .emoji {
-  display: none;
+  max-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  margin-right: 0;
 }
 body.expanded .row {
   cursor: default;
@@ -595,43 +627,49 @@ body.expanded .row {
 body.expanded .row:active {
   cursor: default;
 }
-body.expanded .np-occ,
+body.expanded .np-occ {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
 body.expanded .emoji-pick {
-  display: none;
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  margin-top: 0;
 }
 body.expanded #player-body {
   max-width: 540px;
   margin: 0 auto;
   width: 100%;
+  position: relative;
+  justify-content: center;
+  padding-bottom: 48px;
 }
 body.expanded .player .cover {
   width: 55%;
 }
 body.expanded .add-bar {
-  display: none;
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-top-color: transparent;
 }
 body.expanded .transition-row {
-  position: sticky;
+  position: absolute;
   bottom: 0;
-  background: var(--espresso-2);
+  left: 50%;
+  transform: translateX(-50%);
   margin: 0;
-  padding: 10px 0 14px;
-  border-top: 1px solid var(--line);
-  z-index: 2;
+  padding: 6px 0 8px;
+  border: none;
+  background: transparent;
+  white-space: nowrap;
 }
-body.expanded #col-songs .scroll {
-  padding-right: 20px;
-}
-/* col-songs in expanded mode: scroll area a bit wider */
 body.expanded #col-songs {
   min-width: 0;
-}
-body.expanded .transition-row {
-  order: 99;
-  margin-top: auto;
-  padding-top: 12px;
-  padding-bottom: 4px;
-  border-top: 1px solid var(--line);
 }
 
 /* ------------------------------------------------------ lock modal z-index */
