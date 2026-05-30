@@ -39,6 +39,7 @@ const state = {
 let expanded = false;         // player expand mode
 let expandRenderToken = 0;    // cancels stale async renders
 let locked = false;           // lock screen mode
+let fadeToPause = false;      // pause at start of next track instead of playing
 const LOCK_PASSWORD = "1235";
 
 /* ---------------------------------------------------------------- utils */
@@ -103,6 +104,8 @@ const transState = {
   duration:   0,
   nextItem:   null,
   completeTimer: null,
+  completeAt:  null,   // wall-clock ms when transition should finish
+  remainingMs: null,   // ms remaining when paused mid-transition
 };
 
 function initWebAudio() {
@@ -215,7 +218,10 @@ function startTransition(nextItem) {
   na.onerror = () => { na.style.display = "none"; };
   $("next-preview").style.display = "";
 
-  transState.completeTimer = setTimeout(() => completeTransition(nextItem), T * 1000);
+  const tMs = T * 1000;
+  transState.completeAt    = Date.now() + tMs;
+  transState.remainingMs   = null;
+  transState.completeTimer = setTimeout(() => completeTransition(nextItem), tMs);
 }
 
 function completeTransition(nextItem) {
@@ -262,9 +268,9 @@ function completeTransition(nextItem) {
 
   $("player").classList.remove("transitioning");
   $("scrub-fill").classList.remove("transitioning");
-  $("next-preview").style.display = "none";
 
   renderPlayer();
+  updateNextPreview();
   renderItems();
   loadOccurrences(nextItem);
   loadPlaylists();
@@ -286,9 +292,33 @@ function abortTransition() {
   audio.playbackRate = 1.0;
   $("player").classList.remove("transitioning");
   $("scrub-fill").classList.remove("transitioning");
-  $("next-preview").style.display = "none";
   transState.nextItem   = null;
   transState.plannedDur = null;
+  transState.completeAt  = null;
+  transState.remainingMs = null;
+  updateNextPreview();
+}
+
+/* ------------------------------------------------- always-on Up Next card */
+async function updateNextPreview() {
+  const next = await getNextSong();
+  const el = $("next-preview");
+  if (!next || !state.playing) { el.style.display = "none"; return; }
+  $("next-title").textContent  = next.title;
+  $("next-artist").textContent = next.artist;
+  const na = $("next-art");
+  na.src = next.art_url;
+  na.style.display = "";
+  na.onerror = () => { na.style.display = "none"; };
+  el.style.display = "";
+  el.classList.toggle("disabled", fadeToPause);
+  // Clicking the Up Next card when fade-to-pause is on just cancels that mode
+  el.onclick = fadeToPause ? () => {
+    fadeToPause = false;
+    $("fade-pause-btn").classList.remove("active");
+    el.classList.remove("disabled");
+    el.onclick = null;
+  } : null;
 }
 
 /* ----------------------------------------------------- load + render col1 */
@@ -657,6 +687,7 @@ function playSong(it) {
   // queue up heavy artwork GET requests.
   setTimeout(() => {
     renderPlayer();
+    updateNextPreview();
     renderItems();
     loadOccurrences(it);
   }, 10);
@@ -781,7 +812,39 @@ async function advance(dir) {
 /* transport + scrubber */
 function onAudioPlay()  { $("play-btn").textContent = "⏸"; }
 function onAudioPause() { $("play-btn").textContent = "▶"; }
-function onAudioEnded() { if (transState.active) return; advance(+1); }
+
+async function advanceAndPause() {
+  const next = await getNextSong();
+  if (!next) return;
+  abortTransition();
+  initWebAudio();
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+  state.playing = { sig: sigOf(next), item: next };
+  audio.src = next.audio_url;
+  // Disable fade-to-pause now that we've consumed it
+  fadeToPause = false;
+  $("fade-pause-btn").classList.remove("active");
+  // Don't call audio.play() — stay paused at position 0
+  setTimeout(() => {
+    renderPlayer();
+    updateNextPreview();
+    renderItems();
+    loadOccurrences(next);
+  }, 10);
+}
+
+function toggleFadeToPause() {
+  fadeToPause = !fadeToPause;
+  $("fade-pause-btn").classList.toggle("active", fadeToPause);
+  if (fadeToPause && (transState.active || transState.armed)) abortTransition();
+  updateNextPreview();
+}
+
+function onAudioEnded() {
+  if (transState.active) return;
+  if (fadeToPause) { advanceAndPause(); return; }
+  advance(+1);
+}
 function onAudioTimeUpdate() {
   const d = audio.duration || 0;
   $("scrub-fill").style.width = d ? `${(audio.currentTime / d) * 100}%` : "0%";
@@ -796,7 +859,7 @@ function onAudioTimeUpdate() {
 
   // Update transition start marker
   const marker = $("scrub-marker");
-  if ($("transition-enabled").checked && d > 0 && isFinite(d)
+  if (!fadeToPause && $("transition-enabled").checked && d > 0 && isFinite(d)
       && transState.plannedDur !== null && !transState.active) {
     const markerFrac = Math.max(0, (d - transState.plannedDur) / d);
     marker.style.left = `${markerFrac * 100}%`;
@@ -807,7 +870,7 @@ function onAudioTimeUpdate() {
 
   // DJ transition arm: trigger when within plannedDur seconds of end
   if (!transState.armed && !transState.active && d > 0 && isFinite(d) && state.playing) {
-    if ($("transition-enabled").checked && transState.plannedDur !== null) {
+    if (!fadeToPause && $("transition-enabled").checked && transState.plannedDur !== null) {
       const remaining = d - audio.currentTime;
       if (remaining > 0 && remaining <= transState.plannedDur) {
         transState.armed = true;
@@ -833,7 +896,27 @@ function reattachAudioListeners(oldEl) {
 
 $('play-btn').addEventListener("click", () => {
   if (!state.playing) return;
-  if (audio.paused) audio.play(); else audio.pause();
+  if (audio.paused) {
+    audio.play();
+    if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+    if (transState.active && transState.remainingMs !== null) {
+      // Resume paused transition: restart audiob, unsuspend AudioContext, reschedule timer
+      audiob.play().catch(() => {});
+      if (audioCtx) audioCtx.resume();
+      transState.completeAt    = Date.now() + transState.remainingMs;
+      transState.completeTimer = setTimeout(() => completeTransition(transState.nextItem), transState.remainingMs);
+      transState.remainingMs   = null;
+    }
+  } else {
+    audio.pause();
+    if (transState.active) {
+      // Freeze the transition: pause deck B, suspend AudioContext, store remaining time
+      audiob.pause();
+      if (audioCtx) audioCtx.suspend();
+      clearTimeout(transState.completeTimer);
+      transState.remainingMs = Math.max(0, transState.completeAt - Date.now());
+    }
+  }
 });
 $('next-btn').addEventListener("click", () => advance(+1));
 $('prev-btn').addEventListener("click", () => {
@@ -945,7 +1028,7 @@ function setAppColumns() {
   const totalW = app.offsetWidth;
   if (!totalW) return;
   if (expanded) {
-    const col2 = 380;
+    const col2 = 520;
     const col3 = Math.max(400, totalW - col2 - 1);
     app.style.gridTemplateColumns = `0px ${col2}px ${col3}px`;
   } else {
@@ -1025,6 +1108,8 @@ document.addEventListener("click", (e) => {
   e.preventDefault();
   showLockPrompt();
 }, true);
+
+$("fade-pause-btn").addEventListener("click", toggleFadeToPause);
 
 $("lock-btn").addEventListener("click", () => {
   if (locked) return;
