@@ -10,18 +10,19 @@ const PLAYLIST_DESCRIPTIONS = {
   "Wedding Reception": "Tuesday, 8pm - The party.",
   "Reception 2": "Tuesday, 10pm - More party.",
   "Reception 3": "Tuesday, Midnight - More niche / chill.",
+  "Reception 4": "Tuesday, Midnight - More niche / chill.",
   "End The Night": "Tuesday, Late - Wind it down.",
   "Extra Songs": "Backups",
   "Instrumentals": "Just in case.",
   "Trash": "Things to delete."
 };
 
-const EMOJIS = ["💞", "✨", "🍂", "🕺"];
+const EMOJIS = ["💞", "✨", "🍂", "🕺", "🗑️"];
 
 // Linked playlist chains — when the last song ends, the next playlist auto-starts
 const LINKED_CHAINS = [
   ["Pizza Party", "Pizza Party 2"],
-  ["Wedding Reception", "Reception 2", "Reception 3", "End The Night"],
+  ["Wedding Reception", "Reception 2", "Reception 3", "Reception 4", "End The Night"],
 ];
 
 let audio  = document.getElementById("audio");
@@ -1611,6 +1612,31 @@ function onShortenToggled() {
   // the onAudioTimeUpdate path will handle it when plannedDur is computed.
 }
 $("shorten-enabled").addEventListener("change", onShortenToggled);
+
+/* --------------------------------------------------------- global search */
+$("global-search").addEventListener("keydown", async (e) => {
+  if (e.key !== "Enter") return;
+  const query = e.target.value.trim().toLowerCase();
+  e.target.value = "";
+  if (!query) return;
+
+  const playlists = await api("GET", "/api/playlists");
+  const hits = [];
+  for (const pl of playlists) {
+    const data = await api("GET", `/api/playlists/${encodeURIComponent(pl.name)}`);
+    const found = data.items.some(
+      (it) => it.type === "song" &&
+        (it.title.toLowerCase().includes(query) || it.artist.toLowerCase().includes(query))
+    );
+    if (found) hits.push(pl.name);
+  }
+
+  if (hits.length === 0) {
+    toast(`No matches for "${query}"`);
+  } else {
+    toast(`"${query}" in: ${hits.join(", ")}`);
+  }
+});
 
 /* ------------------------------------------------------------- startup */
 setAppColumns();

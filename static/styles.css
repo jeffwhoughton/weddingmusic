@@ -60,6 +60,21 @@ body::after {
   font-size: 12.5px; color: var(--muted); letter-spacing: 0.18em;
   text-transform: uppercase;
 }
+.global-search {
+  margin-left: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  color: var(--cream);
+  font-family: 'Hanken Grotesk', system-ui, sans-serif;
+  font-size: 13px;
+  padding: 5px 12px;
+  width: 220px;
+  outline: none;
+  transition: border-color .18s;
+}
+.global-search::placeholder { color: var(--muted); }
+.global-search:focus { border-color: var(--gold-soft); }
 
 /* ----------------------------------------------------------------- layout */
 .app {
