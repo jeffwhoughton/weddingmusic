@@ -22,7 +22,7 @@ const EMOJIS = ["💞", "✨", "🍂", "🕺", "🗑️"];
 // Linked playlist chains — when the last song ends, the next playlist auto-starts
 const LINKED_CHAINS = [
   ["Pizza Party", "Pizza Party 2"],
-  ["Wedding Reception", "Reception 2", "Reception 3", "Reception 4", "End The Night"],
+  ["Wedding Reception", "Reception 2", "Reception 3", "End The Night"],
 ];
 
 let audio  = document.getElementById("audio");
