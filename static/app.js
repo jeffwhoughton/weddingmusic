@@ -433,27 +433,7 @@ function startTransition(nextItem) {
   transState.duration = T;
   transState.nextItem = nextItem;
 
-  // -- Deck A out: HPF sweeps bass away, gain S-curves to 0 --
-  hpfA.frequency.cancelScheduledValues(now);
-  hpfA.frequency.setValueAtTime(20, now);
-  hpfA.frequency.exponentialRampToValueAtTime(500,  now + T * 0.55);
-  hpfA.frequency.exponentialRampToValueAtTime(3500, now + T);
-
-  gainA.gain.cancelScheduledValues(now);
-  gainA.gain.setValueAtTime(1.0, now);
-  gainA.gain.setValueAtTime(1.0, now + T * 0.18);   // hold full briefly
-  gainA.gain.linearRampToValueAtTime(0.5, now + T * 0.6);
-  gainA.gain.linearRampToValueAtTime(0.0, now + T * 0.95);
-
-  // Outgoing track drifts slightly faster (classic DJ spin-out)
-  const rampStart = Date.now(), rampMs = T * 750;
-  const rateInterval = setInterval(() => {
-    const t = Date.now() - rampStart;
-    if (t >= rampMs || !transState.active) { clearInterval(rateInterval); return; }
-    audio.playbackRate = 1 + (t / rampMs) * 0.09;
-  }, 50);
-
-  // -- Deck B in: pre-load, LPF resonant sweep opens up, gain fades in --
+  // -- Deck B in: pre-load and start --
   audiob.src = nextItem.audio_url;
   audiob.volume = 1;
   audiob.playbackRate = 1.0;
@@ -465,18 +445,97 @@ function startTransition(nextItem) {
   }
   audiob.play().catch(() => {});
 
+  hpfA.frequency.cancelScheduledValues(now);
+  gainA.gain.cancelScheduledValues(now);
   lpfB.frequency.cancelScheduledValues(now);
-  lpfB.frequency.setValueAtTime(280, now);
-  lpfB.frequency.setValueAtTime(280, now + T * 0.08);
-  lpfB.frequency.exponentialRampToValueAtTime(2200,  now + T * 0.5);
-  lpfB.frequency.exponentialRampToValueAtTime(20000, now + T * 0.78);
-
   gainB.gain.cancelScheduledValues(now);
-  gainB.gain.setValueAtTime(0.0, now);
-  gainB.gain.setValueAtTime(0.0, now + T * 0.1);
-  gainB.gain.linearRampToValueAtTime(0.35, now + T * 0.38);
-  gainB.gain.linearRampToValueAtTime(0.75, now + T * 0.68);
-  gainB.gain.linearRampToValueAtTime(1.0,  now + T * 0.9);
+
+  if (nextItem.quick_intro) {
+    // === DJ QUICK CUT ===
+    // B reaches full volume at the halfway point; A keeps fading underneath
+    // for ~2 more seconds so the previous track "drags into" the new one.
+    const CUT = Math.min(T, 4.0);
+    const LINGER = CUT * 0.18;  // A holds full briefly before its exit begins
+
+    // Deck A: hold → HPF sweep → silent at CUT (finishes after B is already full)
+    hpfA.frequency.setValueAtTime(20, now);
+    hpfA.frequency.setValueAtTime(20,   now + LINGER);
+    hpfA.frequency.exponentialRampToValueAtTime(700,  now + CUT * 0.55);
+    hpfA.frequency.exponentialRampToValueAtTime(4500, now + CUT);
+
+    gainA.gain.setValueAtTime(1.0, now);
+    gainA.gain.setValueAtTime(1.0, now + LINGER);
+    gainA.gain.linearRampToValueAtTime(0.5, now + CUT * 0.5);  // still audible when B hits full
+    gainA.gain.linearRampToValueAtTime(0.0, now + CUT);
+
+    // Spin deck A out gradually over the full window
+    const rampStartQI = Date.now() + LINGER * 1000, rampMsQI = (CUT - LINGER) * 900;
+    const rateIntervalQI = setInterval(() => {
+      const t = Date.now() - rampStartQI;
+      if (t < 0) return;
+      if (t >= rampMsQI || !transState.active) { clearInterval(rateIntervalQI); return; }
+      audio.playbackRate = 1 + (t / rampMsQI) * 0.08;
+    }, 50);
+
+    // Deck B: rises quickly and hits full at the halfway mark
+    const DROP = CUT * 0.06;
+    lpfB.frequency.setValueAtTime(20000, now);
+    gainB.gain.setValueAtTime(0.0, now);
+    gainB.gain.setValueAtTime(0.0, now + DROP);
+    gainB.gain.linearRampToValueAtTime(0.6,  now + CUT * 0.3);
+    gainB.gain.linearRampToValueAtTime(1.0,  now + CUT * 0.5);  // full at halfway
+
+  } else {
+    // === NORMAL CROSSFADE ===
+    // Deck A out: HPF sweeps bass away, gain S-curves to 0
+    // If the outgoing song has long_outro, its vocal/treble tail hangs on for
+    // EXTRA seconds after B reaches full volume.
+    const currentItem = state.playing ? state.playing.item : null;
+    const EXTRA = (currentItem && currentItem.long_outro) ? 4.0 : 0;
+
+    hpfA.frequency.setValueAtTime(20, now);
+    if (EXTRA > 0) {
+      // Gentle bass cut during normal T so only vocals remain at the crossover
+      hpfA.frequency.exponentialRampToValueAtTime(350,  now + T * 0.5);
+      hpfA.frequency.exponentialRampToValueAtTime(600,  now + T);
+      // Slowly filter up through vocal range during the tail, then out
+      hpfA.frequency.exponentialRampToValueAtTime(3500, now + T + EXTRA);
+    } else {
+      hpfA.frequency.exponentialRampToValueAtTime(500,  now + T * 0.55);
+      hpfA.frequency.exponentialRampToValueAtTime(3500, now + T);
+    }
+
+    gainA.gain.setValueAtTime(1.0, now);
+    gainA.gain.setValueAtTime(1.0, now + T * 0.18);
+    if (EXTRA > 0) {
+      // Hold higher into the transition, stay audible at crossover, then drift to 0
+      gainA.gain.linearRampToValueAtTime(0.7,  now + T * 0.6);
+      gainA.gain.linearRampToValueAtTime(0.55, now + T);        // still present when B hits full
+      gainA.gain.linearRampToValueAtTime(0.0,  now + T + EXTRA);
+    } else {
+      gainA.gain.linearRampToValueAtTime(0.5, now + T * 0.6);
+      gainA.gain.linearRampToValueAtTime(0.0, now + T * 0.95);
+    }
+
+    // Outgoing track drifts slightly faster (classic DJ spin-out)
+    const rampStart = Date.now(), rampMs = (T + EXTRA * 0.5) * 750;
+    const rateInterval = setInterval(() => {
+      const t = Date.now() - rampStart;
+      if (t >= rampMs || !transState.active) { clearInterval(rateInterval); return; }
+      audio.playbackRate = 1 + (t / rampMs) * 0.09;
+    }, 50);
+
+    // Deck B in: slow resonant LPF sweep + gradual gain (unchanged)
+    lpfB.frequency.setValueAtTime(280, now);
+    lpfB.frequency.setValueAtTime(280, now + T * 0.08);
+    lpfB.frequency.exponentialRampToValueAtTime(2200,  now + T * 0.5);
+    lpfB.frequency.exponentialRampToValueAtTime(20000, now + T * 0.78);
+    gainB.gain.setValueAtTime(0.0, now);
+    gainB.gain.setValueAtTime(0.0, now + T * 0.1);
+    gainB.gain.linearRampToValueAtTime(0.35, now + T * 0.38);
+    gainB.gain.linearRampToValueAtTime(0.75, now + T * 0.68);
+    gainB.gain.linearRampToValueAtTime(1.0,  now + T * 0.9);
+  }
 
   // -- Visuals --
   $("player").classList.add("transitioning");
@@ -489,7 +548,9 @@ function startTransition(nextItem) {
   na.onerror = () => { na.style.display = "none"; };
   $("next-preview").style.display = "";
 
-  const tMs = T * 1000;
+  const _currentItem = state.playing ? state.playing.item : null;
+  const _longOutroExtra = (!nextItem.quick_intro && _currentItem && _currentItem.long_outro) ? 4.0 : 0;
+  const tMs = nextItem.quick_intro ? Math.min(T, 4.0) * 1000 : (T + _longOutroExtra) * 1000;
   transState.completeAt    = Date.now() + tMs;
   transState.remainingMs   = null;
   transState.completeTimer = setTimeout(() => completeTransition(nextItem), tMs);
@@ -1146,6 +1207,16 @@ function renderPlayer() {
   if (!expanded) renderPlaylists();
   updateScrollPip();
   updateClearPointsBtn();
+  // Quick-intro button: visible only when transitions are enabled, reflects current song's tag
+  const qiRow = $("quick-intro-row");
+  const qiBtn = $("quick-intro-btn");
+  const loBtn = $("long-outro-btn");
+  if (qiRow && qiBtn) {
+    const showQI = $("transition-enabled").checked;
+    qiRow.style.display = showQI ? "" : "none";
+    qiBtn.classList.toggle("active", !!it.quick_intro);
+  }
+  if (loBtn) loBtn.classList.toggle("active", !!it.long_outro);
 }
 
 async function loadOccurrences(it) {
@@ -1735,6 +1806,8 @@ $("transition-enabled").addEventListener("change", () => {
   const on = $("transition-enabled").checked;
   $("shorten-row").style.display = on ? "" : "none";
   $("transition-now-btn").style.display = on ? "" : "none";
+  const qiRow = $("quick-intro-row");
+  if (qiRow) qiRow.style.display = (on && state.playing) ? "" : "none";
   if (!on && $("shorten-enabled").checked) {
     $("shorten-enabled").checked = false;
     // Restore natural trigger point since transitions are now off
@@ -1786,6 +1859,40 @@ function onShortenToggled() {
   // the onAudioTimeUpdate path will handle it when plannedDur is computed.
 }
 $("shorten-enabled").addEventListener("change", onShortenToggled);
+
+/* ------------------------------------------------- quick intro toggle */
+$("quick-intro-btn").addEventListener("click", async () => {
+  if (!state.playing) return;
+  const it = state.playing.item;
+  const newVal = !it.quick_intro;
+  it.quick_intro = newVal;
+  $("quick-intro-btn").classList.toggle("active", newVal);
+  try {
+    await api("POST", "/api/quick-intro", { playlist: it.playlist, id: it.id, value: newVal });
+    toast(newVal ? "⚡ Quick intro on" : "Quick intro off");
+  } catch (_) {
+    it.quick_intro = !newVal;
+    $("quick-intro-btn").classList.toggle("active", !newVal);
+    toast("Failed to save.");
+  }
+});
+
+/* -------------------------------------------------- long outro toggle */
+$("long-outro-btn").addEventListener("click", async () => {
+  if (!state.playing) return;
+  const it = state.playing.item;
+  const newVal = !it.long_outro;
+  it.long_outro = newVal;
+  $("long-outro-btn").classList.toggle("active", newVal);
+  try {
+    await api("POST", "/api/long-outro", { playlist: it.playlist, id: it.id, value: newVal });
+    toast(newVal ? "🎶 Long outro on" : "Long outro off");
+  } catch (_) {
+    it.long_outro = !newVal;
+    $("long-outro-btn").classList.toggle("active", !newVal);
+    toast("Failed to save.");
+  }
+});
 
 /* --------------------------------------------------------- global search */
 $("global-search").addEventListener("keydown", async (e) => {

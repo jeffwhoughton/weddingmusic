@@ -607,6 +607,37 @@ body::after {
   display: flex; align-items: stretch; gap: 6px;
 }
 
+/* Quick-intro / Long-outro toggles */
+.quick-intro-row {
+  margin-top: 10px; text-align: center; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+}
+.quick-intro-btn,
+.long-outro-btn {
+  background: none;
+  border: 1px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 11.5px; font-family: inherit;
+  padding: 4px 14px; border-radius: 20px;
+  cursor: pointer; letter-spacing: 0.06em;
+  transition: color .15s, border-color .15s, background .15s, box-shadow .15s;
+}
+.quick-intro-btn:hover,
+.long-outro-btn:hover {
+  color: var(--cream-dim); border-color: var(--cream-dim);
+}
+.quick-intro-btn.active {
+  color: #ffd966;
+  border-color: rgba(255, 200, 40, 0.7);
+  background: rgba(255, 200, 40, 0.1);
+  box-shadow: 0 0 8px rgba(255,200,40,.25);
+}
+.long-outro-btn.active {
+  color: #7fd8ff;
+  border-color: rgba(80, 180, 255, 0.7);
+  background: rgba(80, 180, 255, 0.1);
+  box-shadow: 0 0 8px rgba(80, 180, 255, 0.25);
+}
+
 /* Fade-to-pause toggle button */
 .fade-pause-btn {
   flex: 0 0 15%;

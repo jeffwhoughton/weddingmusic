@@ -225,8 +225,10 @@ def read_cover(path: Path):
 #  Transition-point metadata helpers
 # --------------------------------------------------------------------------- #
 
-TRANSITION_TAG_KEY = "PS_TRANSITION"
-START_TAG_KEY = "PS_START"
+TRANSITION_TAG_KEY   = "PS_TRANSITION"
+START_TAG_KEY        = "PS_START"
+QUICK_INTRO_TAG_KEY  = "PS_QUICK_INTRO"
+LONG_OUTRO_TAG_KEY   = "PS_LONG_OUTRO"
 
 
 def _read_custom_tag(path: Path, tag_key: str):
@@ -337,6 +339,26 @@ def write_start_point(path: Path, seconds):
     _write_custom_tag(path, START_TAG_KEY, seconds)
 
 
+def read_quick_intro(path: Path) -> bool:
+    """Return True if the song is tagged as having a quick/abrupt intro."""
+    val = _read_custom_tag(path, QUICK_INTRO_TAG_KEY)
+    return val is not None and val > 0.5
+
+
+def write_quick_intro(path: Path, value: bool):
+    """Set or remove the quick-intro tag."""
+    _write_custom_tag(path, QUICK_INTRO_TAG_KEY, 1.0 if value else None)
+
+
+def read_long_outro(path: Path) -> bool:
+    """Return True if the song is tagged as having a long vocal outro."""
+    val = _read_custom_tag(path, LONG_OUTRO_TAG_KEY)
+    return val is not None and val > 0.5
+
+
+def write_long_outro(path: Path, value: bool):
+    """Set or remove the long-outro tag."""
+    _write_custom_tag(path, LONG_OUTRO_TAG_KEY, 1.0 if value else None)
 
 
 # --------------------------------------------------------------------------- #
@@ -388,6 +410,8 @@ def serialize_item(playlist: str, filename: str):
         "art_url": f"/api/art/{enc_pl}/{enc_fn}",
         "transition_point": read_transition_point(fp),
         "start_point": read_start_point(fp),
+        "quick_intro": read_quick_intro(fp),
+        "long_outro": read_long_outro(fp),
     }
 
 
@@ -684,6 +708,32 @@ def api_set_start_point():
             abort(400, "Invalid time value")
     write_start_point(fp, time_val)
     return jsonify({"ok": True, "start_point": time_val})
+
+
+@app.post("/api/quick-intro")
+def api_set_quick_intro():
+    data = request.get_json(force=True)
+    playlist = data.get("playlist", "")
+    item_id  = data.get("id", "")
+    value    = bool(data.get("value", False))
+    fp = playlist_path(playlist) / item_id
+    if not fp.exists() or not is_song(item_id):
+        abort(404)
+    write_quick_intro(fp, value)
+    return jsonify({"ok": True, "quick_intro": value})
+
+
+@app.post("/api/long-outro")
+def api_set_long_outro():
+    data = request.get_json(force=True)
+    playlist = data.get("playlist", "")
+    item_id  = data.get("id", "")
+    value    = bool(data.get("value", False))
+    fp = playlist_path(playlist) / item_id
+    if not fp.exists() or not is_song(item_id):
+        abort(404)
+    write_long_outro(fp, value)
+    return jsonify({"ok": True, "long_outro": value})
 
 
 @app.post("/api/song")
