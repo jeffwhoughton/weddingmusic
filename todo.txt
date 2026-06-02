@@ -3,6 +3,14 @@
 
 - Make it so if the app is in expanded mode, and is unlocked for more than 30 seconds, it becomes locked.
 
+Fix bug where I can't drag.
+
+clear points should only clear in point, lets let the custom out point be the same regardless of if the app calcualted it or i placed it
+
+If Shorten Songs is enabled, in the playlist column, show the track lengths based on the shortened transition points in purple after the normal track lengths. Also show the total playlists durations in column 1 this way. This may mean you need to calculate the shortened out point for any songs that don't have a custom out point. You can put this in meta data to make this quicker on future passes. 
+
+
+
 
 Add golden somewhere
 
