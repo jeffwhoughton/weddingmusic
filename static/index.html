@@ -51,8 +51,11 @@
           <div class="np-occ" id="np-occ"></div>
 
           <div class="scrub">
-            <div class="track" id="scrub-track"><div class="fill" id="scrub-fill"></div><div class="transition-marker" id="scrub-marker" style="display:none"></div></div>
+            <div class="track" id="scrub-track"><canvas id="waveform-canvas"></canvas><div class="fill" id="scrub-fill"></div><div class="start-marker" id="start-marker" style="display:none"></div><div class="transition-marker" id="scrub-marker" style="display:none"></div></div>
             <div class="times"><span id="t-cur">0:00</span><span id="t-dur">0:00</span></div>
+            <div class="points-clear-row" id="points-clear-row" style="display:none">
+              <button id="clear-points-btn" class="clear-points-btn">✕ Clear custom points</button>
+            </div>
           </div>
 
           <div class="transport">

@@ -28,11 +28,13 @@ from flask import (
 
 try:
     from mutagen import File as MutagenFile
-    from mutagen.id3 import ID3
-    from mutagen.mp4 import MP4
+    from mutagen.id3 import ID3, TXXX
+    from mutagen.mp4 import MP4, MP4FreeForm
     from mutagen.flac import FLAC
 except Exception:  # pragma: no cover
     MutagenFile = None
+    TXXX = None
+    MP4FreeForm = None
 
 # --------------------------------------------------------------------------- #
 #  Configuration
@@ -220,6 +222,124 @@ def read_cover(path: Path):
 
 
 # --------------------------------------------------------------------------- #
+#  Transition-point metadata helpers
+# --------------------------------------------------------------------------- #
+
+TRANSITION_TAG_KEY = "PS_TRANSITION"
+START_TAG_KEY = "PS_START"
+
+
+def _read_custom_tag(path: Path, tag_key: str):
+    """Generic helper: read a single float custom tag from any supported format."""
+    if MutagenFile is None:
+        return None
+    try:
+        ext = path.suffix.lower()
+        if ext == ".mp3":
+            tags = ID3(str(path))
+            for k in list(tags.keys()):
+                if k.upper() == f"TXXX:{tag_key}":
+                    v = tags[k]
+                    text = v.text[0] if v.text else None
+                    if text:
+                        return float(text)
+        elif ext in (".m4a", ".mp4", ".aac"):
+            mp4 = MP4(str(path))
+            if mp4.tags:
+                key = f"----:com.apple.iTunes:{tag_key}"
+                vals = mp4.tags.get(key)
+                if vals:
+                    return float(bytes(vals[0]).decode())
+        elif ext == ".flac":
+            fl = FLAC(str(path))
+            if fl.tags:
+                vals = fl.tags.get(tag_key)
+                if vals:
+                    return float(vals[0])
+        else:
+            mf = MutagenFile(str(path))
+            if mf and mf.tags:
+                val = mf.tags.get(tag_key)
+                if val:
+                    v0 = val[0] if isinstance(val, list) else val
+                    return float(str(v0))
+    except Exception:
+        pass
+    return None
+
+
+def _write_custom_tag(path: Path, tag_key: str, seconds):
+    """Generic helper: write (or remove if seconds is None) a float custom tag."""
+    if MutagenFile is None:
+        return
+    try:
+        ext = path.suffix.lower()
+        if ext == ".mp3":
+            from mutagen.id3 import error as ID3Error
+            try:
+                tags = ID3(str(path))
+            except ID3Error:
+                tags = ID3()
+            tag_key_full = f"TXXX:{tag_key}"
+            tags.delall(tag_key_full)
+            if seconds is not None:
+                tags.add(TXXX(encoding=3, desc=tag_key,
+                               text=[str(round(float(seconds), 3))]))
+            tags.save(str(path))
+        elif ext in (".m4a", ".mp4", ".aac"):
+            mp4 = MP4(str(path))
+            if mp4.tags is None:
+                mp4.add_tags()
+            key = f"----:com.apple.iTunes:{tag_key}"
+            if seconds is None:
+                mp4.tags.pop(key, None)
+            else:
+                mp4.tags[key] = [MP4FreeForm(
+                    str(round(float(seconds), 3)).encode())]
+            mp4.save()
+        elif ext == ".flac":
+            fl = FLAC(str(path))
+            if seconds is None:
+                if fl.tags:
+                    fl.tags.pop(tag_key, None)
+            else:
+                if fl.tags is None:
+                    fl.add_vorbis_comment()
+                fl.tags[tag_key] = [str(round(float(seconds), 3))]
+            fl.save()
+        else:
+            mf = MutagenFile(str(path))
+            if mf is not None:
+                if mf.tags is None:
+                    mf.add_tags()
+                if seconds is None:
+                    mf.tags.pop(tag_key, None)
+                else:
+                    mf.tags[tag_key] = [str(round(float(seconds), 3))]
+                mf.save()
+    except Exception:
+        pass
+
+
+def read_transition_point(path: Path):
+    return _read_custom_tag(path, TRANSITION_TAG_KEY)
+
+
+def write_transition_point(path: Path, seconds):
+    _write_custom_tag(path, TRANSITION_TAG_KEY, seconds)
+
+
+def read_start_point(path: Path):
+    return _read_custom_tag(path, START_TAG_KEY)
+
+
+def write_start_point(path: Path, seconds):
+    _write_custom_tag(path, START_TAG_KEY, seconds)
+
+
+
+
+# --------------------------------------------------------------------------- #
 #  Item serialization
 # --------------------------------------------------------------------------- #
 
@@ -253,6 +373,7 @@ def serialize_item(playlist: str, filename: str):
     from urllib.parse import quote
     enc_pl = quote(playlist)
     enc_fn = quote(filename)
+    fp = playlist_path(playlist) / filename
     return {
         "type": "song",
         "id": filename,
@@ -265,6 +386,8 @@ def serialize_item(playlist: str, filename: str):
         "duration_human": human_time(meta["duration"]),
         "audio_url": f"/api/audio/{enc_pl}/{enc_fn}",
         "art_url": f"/api/art/{enc_pl}/{enc_fn}",
+        "transition_point": read_transition_point(fp),
+        "start_point": read_start_point(fp),
     }
 
 
@@ -525,6 +648,42 @@ def api_set_emoji():
     dst = pdir / new_name
     os.replace(str(src), str(dst))
     return jsonify({"ok": True, "id": dst.name})
+
+
+@app.post("/api/transition-point")
+def api_set_transition_point():
+    data = request.get_json(force=True)
+    playlist = data.get("playlist", "")
+    item_id  = data.get("id", "")
+    time_val = data.get("time")   # float or None
+    fp = playlist_path(playlist) / item_id
+    if not fp.exists() or not is_song(item_id):
+        abort(404)
+    if time_val is not None:
+        try:
+            time_val = float(time_val)
+        except (TypeError, ValueError):
+            abort(400, "Invalid time value")
+    write_transition_point(fp, time_val)
+    return jsonify({"ok": True, "transition_point": time_val})
+
+
+@app.post("/api/start-point")
+def api_set_start_point():
+    data = request.get_json(force=True)
+    playlist = data.get("playlist", "")
+    item_id  = data.get("id", "")
+    time_val = data.get("time")   # float or None
+    fp = playlist_path(playlist) / item_id
+    if not fp.exists() or not is_song(item_id):
+        abort(404)
+    if time_val is not None:
+        try:
+            time_val = float(time_val)
+        except (TypeError, ValueError):
+            abort(400, "Invalid time value")
+    write_start_point(fp, time_val)
+    return jsonify({"ok": True, "start_point": time_val})
 
 
 @app.post("/api/song")

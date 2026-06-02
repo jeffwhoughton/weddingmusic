@@ -43,6 +43,9 @@ let locked = false;           // lock screen mode
 let fadeToPause = false;      // pause at start of next track instead of playing
 const LOCK_PASSWORD = "1235";
 
+// Waveform data cache: sig → { data: Float32Array, winSec, duration, dipTime }
+const waveformCache = new Map();
+
 // Go Here Next / Queue Next state
 const queueState = {
   mode: null,           // null | "goHereNext" | "queueNext"
@@ -162,6 +165,8 @@ const transState = {
   triggerAt:   null,   // song-time (seconds) at which to arm the transition
   dipTime:     null,   // cached quiet-dip time (seconds) for current song
   dipAnalyzing:false,  // true while async dip analysis is in-flight
+  manualTriggerAt: null, // user-dragged trigger point (null = use auto)
+  manualStartAt:   null, // user-dragged start point (null = play from beginning)
 };
 
 function initWebAudio() {
@@ -293,7 +298,16 @@ async function analyzeDipTime(item) {
       }
     }
 
-    return Math.max(duration * 0.60, Math.min(duration * 0.88, bestTime));
+    const dipResult = Math.max(duration * 0.60, Math.min(duration * 0.88, bestTime));
+
+    // Cache normalized waveform data for display
+    const sortedForNorm = Array.from(smo.subarray(0, numW)).sort((a, b) => a - b);
+    const p95ForNorm = sortedForNorm[Math.floor(sortedForNorm.length * 0.95)] || 0.001;
+    const normWaveform = new Float32Array(numW);
+    for (let w = 0; w < numW; w++) normWaveform[w] = Math.min(1, smo[w] / p95ForNorm);
+    waveformCache.set(sigOf(item), { data: normWaveform, winSec, duration, dipTime: dipResult });
+
+    return dipResult;
   } catch (_) { return null; }
 }
 
@@ -301,11 +315,62 @@ async function analyzeDipTime(item) {
 // already passed it and no transition is in progress.
 function applyDipToTransition(dipTime, d) {
   if (dipTime === null || transState.active || transState.armed) return;
+  // Don't let auto-analysis override a user-set manual trigger
+  if (transState.manualTriggerAt !== null && $("shorten-enabled").checked) return;
   if (dipTime > audio.currentTime) {
     transState.triggerAt = dipTime;
   }
   // If the playhead is already past the dip, leave triggerAt unchanged
   // (natural d - plannedDur point stays in effect).
+}
+
+/* ------------------------------------------------- waveform rendering */
+function drawWaveform(sig) {
+  const canvas = $("waveform-canvas");
+  if (!canvas) return;
+  const track = canvas.parentElement;
+  const dpr = window.devicePixelRatio || 1;
+  const W = track.clientWidth;
+  const H = track.clientHeight;
+  if (W === 0 || H === 0) return;
+
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width  = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+  }
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+
+  const cached = waveformCache.get(sig);
+  if (!cached) return;
+
+  const { data, winSec, duration } = cached;
+  const CW = canvas.width, CH = canvas.height;
+  // ~2 css-px bars; at least 1 physical pixel
+  const numBars = Math.max(1, Math.floor(CW / (2 * dpr)));
+  const barPx   = CW / numBars;
+
+  ctx2d.fillStyle = "rgba(240, 215, 145, 0.55)";
+  for (let i = 0; i < numBars; i++) {
+    const t   = (i / numBars) * duration;
+    const idx = Math.min(data.length - 1, Math.floor(t / winSec));
+    const val = data[idx];
+    const barH = Math.max(dpr, val * CH * 0.92);
+    ctx2d.fillRect(i * barPx, (CH - barH) / 2, Math.max(dpr, barPx - dpr), barH);
+  }
+}
+
+function clearWaveform() {
+  const canvas = $("waveform-canvas");
+  if (!canvas) return;
+  const ctx2d = canvas.getContext("2d");
+  ctx2d.clearRect(0, 0, canvas.width, canvas.height);
+}
+
+function updateClearPointsBtn() {
+  const has = transState.manualStartAt !== null || transState.manualTriggerAt !== null;
+  const row = $("points-clear-row");
+  if (row) row.style.display = has ? "" : "none";
 }
 
 async function getNaturalNextSong() {
@@ -392,6 +457,12 @@ function startTransition(nextItem) {
   audiob.src = nextItem.audio_url;
   audiob.volume = 1;
   audiob.playbackRate = 1.0;
+  // Seek incoming deck to custom start point if shorten is on
+  const _nextStartAt = $('shorten-enabled').checked && nextItem.start_point != null
+    ? nextItem.start_point : null;
+  if (_nextStartAt !== null) {
+    audiob.addEventListener('loadedmetadata', () => { audiob.currentTime = _nextStartAt; }, { once: true });
+  }
   audiob.play().catch(() => {});
 
   lpfB.frequency.cancelScheduledValues(now);
@@ -466,11 +537,32 @@ async function completeTransition(nextItem) {
   // sees the outgoing song here, so returnTo is computed correctly).
   await consumeQueueForNextItem(nextItem);
   state.playing = { sig: sigOf(nextItem), item: nextItem };
-  transState.armed       = false;
-  transState.plannedDur  = null;
-  transState.triggerAt   = null;
-  transState.dipTime     = null;
-  transState.dipAnalyzing = false;
+  transState.armed         = false;
+  transState.plannedDur    = null;
+  transState.triggerAt     = null;
+  transState.dipTime       = null;
+  transState.dipAnalyzing  = false;
+  transState.manualTriggerAt = (nextItem.transition_point != null) ? nextItem.transition_point : null;
+  transState.manualStartAt   = (nextItem.start_point != null) ? nextItem.start_point : null;
+
+  // Load waveform for the new song (may already be cached from pre-fetch)
+  const _newSig = sigOf(nextItem);
+  if (waveformCache.has(_newSig)) {
+    const cached = waveformCache.get(_newSig);
+    transState.dipTime = cached.dipTime ?? null;
+    setTimeout(() => drawWaveform(_newSig), 20);
+  } else {
+    transState.dipAnalyzing = true;
+    analyzeDipTime(nextItem).then((t) => {
+      transState.dipAnalyzing = false;
+      if (!state.playing || state.playing.sig !== _newSig) return;
+      transState.dipTime = t;
+      drawWaveform(_newSig);
+      if ($('shorten-enabled').checked && transState.manualTriggerAt === null) {
+        applyDipToTransition(t, audio.duration || 0);
+      }
+    }).catch(() => { transState.dipAnalyzing = false; });
+  }
 
   $("player").classList.remove("transitioning");
   $("scrub-fill").classList.remove("transitioning");
@@ -503,6 +595,7 @@ function abortTransition() {
   transState.triggerAt   = null;
   transState.completeAt  = null;
   transState.remainingMs = null;
+  // Note: manualTriggerAt is NOT cleared here — we stay on the same song
   updateNextPreview();
 }
 
@@ -968,22 +1061,57 @@ async function moveToPlaylist(target) {
 /* --------------------------------------------------------------- player */
 function playSong(it) {
   abortTransition();
-  transState.armed       = false;
-  transState.plannedDur  = null;
-  transState.triggerAt   = null;
-  transState.dipTime     = null;
-  transState.dipAnalyzing = false;
+  transState.armed         = false;
+  transState.plannedDur    = null;
+  transState.triggerAt     = null;
+  transState.dipTime       = null;
+  transState.dipAnalyzing  = false;
+  transState.manualTriggerAt = (it.transition_point != null) ? it.transition_point : null;
+  transState.manualStartAt   = (it.start_point != null) ? it.start_point : null;
+
   initWebAudio();
   if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
   state.playing = { sig: sigOf(it), item: it };
   audio.src = it.audio_url;
   audio.play().catch(() => {});
-  
-  // Set a tiny timeout so the browser prioritizes network resources 
-  // for downloading the MP3 GET request before any potential DOM rebuilds 
+
+  // Seek to custom start point when shorten is on
+  if ($('shorten-enabled').checked && transState.manualStartAt !== null) {
+    const _startAt = transState.manualStartAt;
+    if (isFinite(audio.duration) && audio.duration > 0) {
+      audio.currentTime = _startAt;
+    } else {
+      audio.addEventListener('loadedmetadata', () => { audio.currentTime = _startAt; }, { once: true });
+    }
+  }
+
+  // Start waveform + dip analysis immediately (always, for waveform display).
+  // If cached, reuse without re-fetching.
+  const _sig = sigOf(it);
+  if (waveformCache.has(_sig)) {
+    const cached = waveformCache.get(_sig);
+    transState.dipTime = cached.dipTime ?? null;
+    // Draw after renderPlayer makes the canvas visible
+    setTimeout(() => drawWaveform(_sig), 20);
+  } else {
+    transState.dipAnalyzing = true;
+    analyzeDipTime(it).then((t) => {
+      transState.dipAnalyzing = false;
+      if (!state.playing || state.playing.sig !== _sig) return;
+      transState.dipTime = t;
+      drawWaveform(_sig);
+      if ($("shorten-enabled").checked && transState.manualTriggerAt === null) {
+        applyDipToTransition(t, audio.duration || 0);
+      }
+    }).catch(() => { transState.dipAnalyzing = false; });
+  }
+
+  // Set a tiny timeout so the browser prioritizes network resources
+  // for downloading the MP3 GET request before any potential DOM rebuilds
   // queue up heavy artwork GET requests.
   setTimeout(() => {
     renderPlayer();
+    drawWaveform(_sig);
     updateNextPreview();
     renderItems();
     loadOccurrences(it);
@@ -1017,6 +1145,7 @@ function renderPlayer() {
   }
   if (!expanded) renderPlaylists();
   updateScrollPip();
+  updateClearPointsBtn();
 }
 
 async function loadOccurrences(it) {
@@ -1204,21 +1333,31 @@ function onAudioTimeUpdate() {
   if (d > 0 && isFinite(d) && state.playing && transState.plannedDur === null
       && !transState.active && !transState.armed) {
     transState.plannedDur = computeTransitionDuration(state.playing.item);
-    transState.triggerAt  = d - transState.plannedDur;
-    // If shorten songs is on, kick off (or reuse) dip analysis
-    if ($("shorten-enabled").checked) {
-      if (transState.dipTime !== null) {
-        applyDipToTransition(transState.dipTime, d);
-      } else if (!transState.dipAnalyzing) {
-        transState.dipAnalyzing = true;
-        const _item = state.playing.item;
-        const _sig  = state.playing.sig;
-        analyzeDipTime(_item).then((t) => {
-          transState.dipAnalyzing = false;
-          if (!state.playing || state.playing.sig !== _sig) return;
-          transState.dipTime = t;
-          if ($("shorten-enabled").checked) applyDipToTransition(t, audio.duration || 0);
-        });
+
+    // Priority: manual trigger > dip analysis > natural end
+    if ($("shorten-enabled").checked && transState.manualTriggerAt !== null) {
+      transState.triggerAt = (transState.manualTriggerAt > audio.currentTime)
+        ? transState.manualTriggerAt
+        : d - transState.plannedDur;
+    } else {
+      transState.triggerAt = d - transState.plannedDur;
+      if ($("shorten-enabled").checked) {
+        if (transState.dipTime !== null) {
+          applyDipToTransition(transState.dipTime, d);
+        } else if (!transState.dipAnalyzing) {
+          // Fallback: analysis wasn't started in playSong (e.g. song changed via transition)
+          transState.dipAnalyzing = true;
+          const _item = state.playing.item;
+          const _sig  = state.playing.sig;
+          analyzeDipTime(_item).then((t) => {
+            transState.dipAnalyzing = false;
+            if (!state.playing || state.playing.sig !== _sig) return;
+            transState.dipTime = t;
+            drawWaveform(_sig);
+            if ($("shorten-enabled").checked && transState.manualTriggerAt === null)
+              applyDipToTransition(t, audio.duration || 0);
+          }).catch(() => { transState.dipAnalyzing = false; });
+        }
       }
     }
   }
@@ -1229,8 +1368,18 @@ function onAudioTimeUpdate() {
       && transState.triggerAt !== null && !transState.active) {
     marker.style.left = `${(transState.triggerAt / d) * 100}%`;
     marker.style.display = "";
+    marker.classList.toggle("manual", transState.manualTriggerAt !== null);
   } else {
     marker.style.display = "none";
+  }
+
+  // Update start point marker
+  const startMarker = $("start-marker");
+  if ($("shorten-enabled").checked && transState.manualStartAt !== null && d > 0 && isFinite(d)) {
+    startMarker.style.left = `${(transState.manualStartAt / d) * 100}%`;
+    startMarker.style.display = "";
+  } else {
+    startMarker.style.display = "none";
   }
 
   // DJ transition arm: trigger when playhead reaches triggerAt
@@ -1314,6 +1463,18 @@ $("scrub-track").addEventListener("click", (e) => {
   const r = e.currentTarget.getBoundingClientRect();
   if (!audio.duration) return;
   const newTime = ((e.clientX - r.left) / r.width) * audio.duration;
+  // Shift+click sets the start point (when shorten is on)
+  if (e.shiftKey && $("shorten-enabled").checked) {
+    transState.manualStartAt = newTime;
+    if (state.playing) state.playing.item.start_point = newTime;
+    updateClearPointsBtn();
+    api("POST", "/api/start-point", {
+      playlist: state.playing.item.playlist,
+      id: state.playing.item.id,
+      time: newTime
+    }).then(() => toast(`Start point set to ${fmt(newTime)}`)).catch(() => toast("Failed to save start point."));
+    return;
+  }
   // Any manual scrub cancels an in-progress or armed transition
   if (transState.active || transState.armed) abortTransition();
   audio.currentTime = newTime;
@@ -1489,6 +1650,8 @@ async function toggleExpand() {
     btn.classList.add("active");
     setAppColumns();
     await renderExpandedItems();
+    // Redraw waveform for the new (larger) track height
+    setTimeout(() => { if (state.playing) drawWaveform(state.playing.sig); }, 50);
   } else {
     // Pin max-width and centering so player contents stay centered during the column animation
     pb.style.maxWidth = "540px";
@@ -1505,6 +1668,8 @@ async function toggleExpand() {
       app.removeEventListener("transitionend", onEnd);
       pb.style.maxWidth = "";
       pb.style.margin = "";
+      // Redraw waveform at normal track height
+      if (state.playing) drawWaveform(state.playing.sig);
     };
     app.addEventListener("transitionend", onEnd);
     renderPlaylists();
@@ -1592,6 +1757,13 @@ function onShortenToggled() {
   }
   // Turning on — only touches the current song if a transition isn't already in flight
   if (!state.playing || transState.active || transState.armed) return;
+  // Manual trigger takes priority over dip analysis
+  if (transState.manualTriggerAt !== null) {
+    if (transState.manualTriggerAt > audio.currentTime) {
+      transState.triggerAt = transState.manualTriggerAt;
+    }
+    return;
+  }
   if (transState.dipTime !== null) {
     // Already have a cached dip time — apply immediately (respects "already past it" rule)
     applyDipToTransition(transState.dipTime, d);
@@ -1604,8 +1776,10 @@ function onShortenToggled() {
       transState.dipAnalyzing = false;
       if (!state.playing || state.playing.sig !== _sig) return;
       transState.dipTime = t;
-      if ($("shorten-enabled").checked) applyDipToTransition(t, audio.duration || 0);
-    });
+      drawWaveform(_sig);
+      if ($("shorten-enabled").checked && transState.manualTriggerAt === null)
+        applyDipToTransition(t, audio.duration || 0);
+    }).catch(() => { transState.dipAnalyzing = false; });
   }
   // If dipAnalyzing is already running, the .then() callback will apply
   // the dip once it completes. If plannedDur is null (song just started),
@@ -1638,7 +1812,170 @@ $("global-search").addEventListener("keydown", async (e) => {
   }
 });
 
+/* ---------------------------------------------------- draggable transition marker */
+function initScrubMarkerDrag() {
+  const marker = $("scrub-marker");
+  const track  = $("scrub-track");
+  let dragging  = false;
+  let didDrag   = false;   // true if pointermove fired during a drag
+
+  marker.addEventListener("pointerdown", (e) => {
+    if (!state.playing || !audio.duration || !$("transition-enabled").checked) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragging = true;
+    didDrag  = false;
+    marker.setPointerCapture(e.pointerId);
+  });
+
+  marker.addEventListener("pointermove", (e) => {
+    if (!dragging || !audio.duration) return;
+    didDrag = true;
+    const rect = track.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const newTime = ratio * audio.duration;
+    transState.triggerAt = newTime;
+    transState.manualTriggerAt = newTime;
+    marker.style.left = `${ratio * 100}%`;
+    marker.classList.add("manual");
+  });
+
+  // Suppress the click that the browser fires on the track after a drag ends
+  marker.addEventListener("click", (e) => {
+    if (didDrag) { e.stopPropagation(); didDrag = false; }
+  });
+
+  marker.addEventListener("pointerup", async (e) => {
+    if (!dragging) return;
+    dragging = false;
+    marker.releasePointerCapture(e.pointerId);
+    if (transState.manualTriggerAt === null || !state.playing) return;
+    const it = state.playing.item;
+    try {
+      await api("POST", "/api/transition-point", {
+        playlist: it.playlist, id: it.id, time: transState.manualTriggerAt
+      });
+      it.transition_point = transState.manualTriggerAt;
+      updateClearPointsBtn();
+      toast(`Transition point set to ${fmt(transState.manualTriggerAt)}`);
+    } catch (_) { toast("Failed to save transition point."); }
+  });
+
+  // Double-click the marker to clear the manual override
+  marker.addEventListener("dblclick", async (e) => {
+    e.stopPropagation();
+    if (!state.playing) return;
+    transState.manualTriggerAt = null;
+    marker.classList.remove("manual");
+    // Restore natural or dip trigger
+    const d = audio.duration || 0;
+    if ($("shorten-enabled").checked && transState.dipTime !== null) {
+      applyDipToTransition(transState.dipTime, d);
+    } else if (transState.plannedDur !== null && d > 0) {
+      transState.triggerAt = d - transState.plannedDur;
+    }
+    const it = state.playing.item;
+    it.transition_point = null;
+    updateClearPointsBtn();
+    try {
+      await api("POST", "/api/transition-point", { playlist: it.playlist, id: it.id, time: null });
+      toast("Transition point cleared.");
+    } catch (_) {}
+  });
+
+  /* ---- start-point marker drag ---- */
+  const startMarker = $("start-marker");
+  let draggingStart = false;
+  let didDragStart  = false;
+
+  startMarker.addEventListener("pointerdown", (e) => {
+    if (!state.playing || !audio.duration || !$("shorten-enabled").checked) return;
+    e.preventDefault();
+    e.stopPropagation();
+    draggingStart = true;
+    didDragStart  = false;
+    startMarker.setPointerCapture(e.pointerId);
+  });
+
+  startMarker.addEventListener("pointermove", (e) => {
+    if (!draggingStart || !audio.duration) return;
+    didDragStart = true;
+    const rect = track.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const newTime = ratio * audio.duration;
+    transState.manualStartAt = newTime;
+    startMarker.style.left = `${ratio * 100}%`;
+  });
+
+  startMarker.addEventListener("click", (e) => {
+    if (didDragStart) { e.stopPropagation(); didDragStart = false; }
+  });
+
+  startMarker.addEventListener("pointerup", async (e) => {
+    if (!draggingStart) return;
+    draggingStart = false;
+    startMarker.releasePointerCapture(e.pointerId);
+    if (transState.manualStartAt === null || !state.playing) return;
+    const it = state.playing.item;
+    it.start_point = transState.manualStartAt;
+    updateClearPointsBtn();
+    try {
+      await api("POST", "/api/start-point", {
+        playlist: it.playlist, id: it.id, time: transState.manualStartAt
+      });
+      toast(`Start point set to ${fmt(transState.manualStartAt)}`);
+    } catch (_) { toast("Failed to save start point."); }
+  });
+
+  // Double-click start marker to clear it
+  startMarker.addEventListener("dblclick", async (e) => {
+    e.stopPropagation();
+    if (!state.playing) return;
+    transState.manualStartAt = null;
+    startMarker.style.display = "none";
+    const it = state.playing.item;
+    it.start_point = null;
+    updateClearPointsBtn();
+    try {
+      await api("POST", "/api/start-point", { playlist: it.playlist, id: it.id, time: null });
+      toast("Start point cleared.");
+    } catch (_) {}
+  });
+}
+
+/* ------------------------------------------------- clear both custom points */
+$("clear-points-btn").addEventListener("click", async () => {
+  if (!state.playing) return;
+  const it = state.playing.item;
+  const hadStart   = transState.manualStartAt !== null;
+  const hadTrigger = transState.manualTriggerAt !== null;
+
+  transState.manualStartAt   = null;
+  transState.manualTriggerAt = null;
+  $("start-marker").style.display = "none";
+  $("scrub-marker").classList.remove("manual");
+
+  // Restore natural or dip-based trigger
+  const d = audio.duration || 0;
+  if ($("shorten-enabled").checked && transState.dipTime !== null) {
+    applyDipToTransition(transState.dipTime, d);
+  } else if (transState.plannedDur !== null && d > 0) {
+    transState.triggerAt = d - transState.plannedDur;
+  }
+  updateClearPointsBtn();
+
+  const saves = [];
+  if (hadStart)   { it.start_point = null;   saves.push(api("POST", "/api/start-point",      { playlist: it.playlist, id: it.id, time: null })); }
+  if (hadTrigger) { it.transition_point = null; saves.push(api("POST", "/api/transition-point", { playlist: it.playlist, id: it.id, time: null })); }
+  try { await Promise.all(saves); toast("Custom points cleared."); }
+  catch (_) { toast("Failed to clear some points."); }
+});
+
 /* ------------------------------------------------------------- startup */
 setAppColumns();
-window.addEventListener('resize', setAppColumns);
+window.addEventListener('resize', () => {
+  setAppColumns();
+  if (state.playing) drawWaveform(state.playing.sig);
+});
+initScrubMarkerDrag();
 loadPlaylists();
