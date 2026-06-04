@@ -46,6 +46,9 @@ const LOCK_PASSWORD = "1235";
 // Waveform data cache: sig → { data: Float32Array, winSec, duration, dipTime }
 const waveformCache = new Map();
 
+// Cache of loaded items per playlist (for shortened-duration totals in col 1)
+const playlistItemsCache = new Map();
+
 // Go Here Next / Queue Next state
 const queueState = {
   mode: null,           // null | "goHereNext" | "queueNext"
@@ -369,7 +372,7 @@ function clearWaveform() {
 
 function updateControlsRow() {
   const it        = state.playing ? state.playing.item : null;
-  const transOn   = $("transition-enabled").checked;
+  const shortenOn = $("shorten-enabled").checked;
   const row       = $("controls-row");
   if (!row) return;
 
@@ -377,21 +380,17 @@ function updateControlsRow() {
   row.style.display = it ? "" : "none";
   if (!it) return;
 
-  const hasStart  = transState.manualStartAt !== null;
-  const hasTrig   = transState.manualTriggerAt !== null;
+  const hasStart = transState.manualStartAt !== null;
 
-  // In-point: show time chip OR "add in point" button (never both)
-  $("start-point-chip").style.display  = hasStart ? "" : "none";
-  $("add-in-point-btn").style.display  = hasStart ? "none" : "";
-  if (hasStart) $("start-point-chip").textContent = fmt(transState.manualStartAt);
-
-  // Transition-point chip
-  const tpChip = $("transition-point-chip");
-  tpChip.style.display = hasTrig ? "" : "none";
-  if (hasTrig) tpChip.textContent = fmt(transState.manualTriggerAt);
-
-  // Clear button — only when there's something to clear
-  $("clear-points-btn").style.display = (hasStart || hasTrig) ? "" : "none";
+  // In-point controls: only visible when "shorten songs" is on
+  if (shortenOn) {
+    $("start-point-chip").style.display = hasStart ? "" : "none";
+    $("add-in-point-btn").style.display = hasStart ? "none" : "";
+    if (hasStart) $("start-point-chip").textContent = fmt(transState.manualStartAt) + " \u00d7";
+  } else {
+    $("start-point-chip").style.display = "none";
+    $("add-in-point-btn").style.display = "none";
+  }
 
   // Quick-intro / long-outro buttons — reflect saved tags, always visible
   const qiBtn = $("quick-intro-btn");
@@ -652,6 +651,12 @@ async function completeTransition(nextItem) {
   if (waveformCache.has(_newSig)) {
     const cached = waveformCache.get(_newSig);
     transState.dipTime = cached.dipTime ?? null;
+    // If no transition_point in metadata, use the cached dip and save it
+    if (transState.manualTriggerAt === null && transState.dipTime !== null) {
+      transState.manualTriggerAt = transState.dipTime;
+      nextItem.transition_point = transState.dipTime;
+      api("POST", "/api/transition-point", { playlist: nextItem.playlist, id: nextItem.id, time: transState.dipTime }).catch(() => {});
+    }
     setTimeout(() => drawWaveform(_newSig), 20);
   } else {
     transState.dipAnalyzing = true;
@@ -660,8 +665,14 @@ async function completeTransition(nextItem) {
       if (!state.playing || state.playing.sig !== _newSig) return;
       transState.dipTime = t;
       drawWaveform(_newSig);
-      if ($('shorten-enabled').checked && transState.manualTriggerAt === null) {
-        applyDipToTransition(t, audio.duration || 0);
+      // If no transition_point in metadata, save the calculated dip now
+      if (transState.manualTriggerAt === null && t !== null) {
+        transState.manualTriggerAt = t;
+        nextItem.transition_point = t;
+        api("POST", "/api/transition-point", { playlist: nextItem.playlist, id: nextItem.id, time: t }).catch(() => {});
+        if ($('shorten-enabled').checked && !transState.active && !transState.armed && t > audio.currentTime) {
+          transState.triggerAt = t;
+        }
       }
     }).catch(() => { transState.dipAnalyzing = false; });
   }
@@ -723,6 +734,31 @@ async function updateNextPreview() {
   } : null;
 }
 
+/* ------------------------------------ shortened-duration helpers */
+function shortenedDurOf(it) {
+  const out = (it.transition_point != null) ? it.transition_point : it.duration;
+  const inn = (it.start_point != null)      ? it.start_point      : 0;
+  return Math.max(0, out - inn);
+}
+
+function shortenedPlaylistTotal(items) {
+  let total = 0;
+  for (const it of items) { if (it.type === "song") total += shortenedDurOf(it); }
+  return total;
+}
+
+function playlistTotal(items) {
+  let total = 0;
+  for (const it of items) { if (it.type === "song") total += (it.duration || 0); }
+  return total;
+}
+
+function shortDurHtml(shortened, original) {
+  const close = Math.abs(original - shortened) <= 10;
+  const timeSpan = close ? fmt(shortened) : `<span class="dur-short">${fmt(shortened)}</span>`;
+  return ` | ${timeSpan}`;
+}
+
 /* ----------------------------------------------------- load + render col1 */
 async function loadPlaylists() {
   state.playlists = await api("GET", "/api/playlists");
@@ -757,10 +793,15 @@ function renderPlaylists() {
     const timeHtml = timeStr ? `<div class="pl-time eyebrow">${esc(timeStr)}</div>` : "";
     const descHtml = descStr ? `<span class="pl-inline-desc">${esc(descStr)}</span>` : "";
 
+    const shortenOn = $("shorten-enabled").checked;
+    const cachedItems = playlistItemsCache.get(p.name);
+    const shortTotalHtml = (shortenOn && cachedItems)
+      ? shortDurHtml(shortenedPlaylistTotal(cachedItems), playlistTotal(cachedItems)) : "";
+
     el.innerHTML = `
       ${timeHtml}
       <div class="pl-name">${esc(p.name)}${descHtml}</div>
-      <div class="pl-meta"><b>${p.song_count}</b> song${p.song_count===1?"":"s"} · ${p.duration_human}</div>`;
+      <div class="pl-meta"><b>${p.song_count}</b> song${p.song_count===1?"":"s"} · ${p.duration_human}${shortTotalHtml}</div>`;
     el.addEventListener("click", () => selectPlaylist(p.name));
     // drop target for moving songs/dividers into this playlist
     el.addEventListener("dragover", (e) => {
@@ -794,6 +835,7 @@ async function selectPlaylist(name) {
 async function loadItems() {
   const data = await api("GET", `/api/playlists/${encodeURIComponent(state.current)}`);
   state.items = data.items;
+  playlistItemsCache.set(state.current, state.items);
   state.selection.clear();           // selection is transient across renames
   if (expanded) {
     await renderExpandedItems();
@@ -858,7 +900,14 @@ function renderItems() {
 
   const songCount = state.items.filter((i) => i.type === "song").length;
   const pl = state.playlists.find((p) => p.name === state.current);
-  $("songs-sub").textContent = pl ? `${songCount} songs · ${pl.duration_human}` : "";
+  const _shortenOn = $("shorten-enabled").checked;
+  if (pl) {
+    let sub = `${songCount} songs · ${pl.duration_human}`;
+    if (_shortenOn) sub += shortDurHtml(shortenedPlaylistTotal(state.items), playlistTotal(state.items));
+    $("songs-sub").innerHTML = sub;
+  } else {
+    $("songs-sub").textContent = "";
+  }
 
   const sel = selectedItems();
   const loneDivider = sel.length === 1 && sel[0].type === "divider" ? sel[0].id : null;
@@ -899,11 +948,19 @@ function renderItems() {
         el.querySelector(".pos").textContent = it.position;
         el.querySelector(".emoji").textContent = it.emoji || "";
 
+        const durEl = el.querySelector(".dur");
+        if (durEl) {
+          const _sd = _shortenOn ? shortDurHtml(shortenedDurOf(it), it.duration) : "";
+          durEl.innerHTML = it.duration_human + _sd;
+        }
+
         const isSelected = state.selection.has(it.id);
         el.querySelector(".chk").checked = isSelected;
 
         const isGHN = queueState.mode === "goHereNext" && queueState.item && sigOf(queueState.item) === sig;
         const isQN  = queueState.mode === "queueNext"  && queueState.item && sigOf(queueState.item) === sig;
+        el.draggable = !expanded;
+        if (!expanded && !el.__dragAttached) attachDrag(el);
         el.className = "row"
           + (isSelected ? " selected"    : "")
           + (isPlaying  ? " playing"     : "")
@@ -950,7 +1007,7 @@ function songEl(it) {
     </div>
     <button class="row-act ghn-btn${isGHN ? " active" : ""}" title="Go Here Next">↩</button>
     <button class="row-act qn-btn${isQN  ? " active" : ""}" title="Queue Next">+</button>
-    <span class="dur">${it.duration_human}</span>`;
+    <span class="dur">${it.duration_human}${$("shorten-enabled").checked ? shortDurHtml(shortenedDurOf(it), it.duration) : ""}</span>`;
 
   // cover art with graceful placeholder
   const img = row.querySelector(".art");
@@ -1084,6 +1141,7 @@ let dropRefId = null;      // insert before this id
 let dropAtEnd = false;
 
 function attachDrag(el) {
+  el.__dragAttached = true;
   el.addEventListener("dragstart", (e) => {
     const id = el.dataset.id;
     // if the grabbed item is part of a multi-selection, drag the whole set
@@ -1202,8 +1260,15 @@ function playSong(it) {
       if (!state.playing || state.playing.sig !== _sig) return;
       transState.dipTime = t;
       drawWaveform(_sig);
-      if ($("shorten-enabled").checked && transState.manualTriggerAt === null) {
-        applyDipToTransition(t, audio.duration || 0);
+      // If no transition_point was in metadata, save the calculated dip now
+      if (transState.manualTriggerAt === null && t !== null) {
+        transState.manualTriggerAt = t;
+        it.transition_point = t;
+        api("POST", "/api/transition-point", { playlist: it.playlist, id: it.id, time: t }).catch(() => {});
+        // Apply to trigger when shorten is on and playhead hasn't passed it
+        if ($("shorten-enabled").checked && !transState.active && !transState.armed && t > audio.currentTime) {
+          transState.triggerAt = t;
+        }
       }
     }).catch(() => { transState.dipAnalyzing = false; });
   }
@@ -1436,46 +1501,59 @@ function onAudioTimeUpdate() {
       && !transState.active && !transState.armed) {
     transState.plannedDur = computeTransitionDuration(state.playing.item);
 
-    // Priority: manual trigger > dip analysis > natural end
     if ($("shorten-enabled").checked && transState.manualTriggerAt !== null) {
+      // Use stored transition point (always in metadata)
       transState.triggerAt = (transState.manualTriggerAt > audio.currentTime)
         ? transState.manualTriggerAt
         : d - transState.plannedDur;
     } else {
+      // Natural end trigger (also used as fallback when manualTriggerAt not yet set)
       transState.triggerAt = d - transState.plannedDur;
-      if ($("shorten-enabled").checked) {
-        if (transState.dipTime !== null) {
-          applyDipToTransition(transState.dipTime, d);
-        } else if (!transState.dipAnalyzing) {
-          // Fallback: analysis wasn't started in playSong (e.g. song changed via transition)
-          transState.dipAnalyzing = true;
-          const _item = state.playing.item;
-          const _sig  = state.playing.sig;
-          analyzeDipTime(_item).then((t) => {
-            transState.dipAnalyzing = false;
-            if (!state.playing || state.playing.sig !== _sig) return;
-            transState.dipTime = t;
-            drawWaveform(_sig);
-            if ($("shorten-enabled").checked && transState.manualTriggerAt === null)
-              applyDipToTransition(t, audio.duration || 0);
-          }).catch(() => { transState.dipAnalyzing = false; });
-        }
+      if ($("shorten-enabled").checked && !transState.dipAnalyzing && transState.manualTriggerAt === null) {
+        // Fallback: analysis wasn't started in playSong (e.g. song changed via transition)
+        transState.dipAnalyzing = true;
+        const _item = state.playing.item;
+        const _sig  = state.playing.sig;
+        analyzeDipTime(_item).then((t) => {
+          transState.dipAnalyzing = false;
+          if (!state.playing || state.playing.sig !== _sig) return;
+          transState.dipTime = t;
+          drawWaveform(_sig);
+          if (t !== null && transState.manualTriggerAt === null) {
+            transState.manualTriggerAt = t;
+            _item.transition_point = t;
+            api("POST", "/api/transition-point", { playlist: _item.playlist, id: _item.id, time: t }).catch(() => {});
+            if ($("shorten-enabled").checked && !transState.active && !transState.armed && t > audio.currentTime) {
+              transState.triggerAt = t;
+            }
+          }
+        }).catch(() => { transState.dipAnalyzing = false; });
       }
     }
   }
 
-  // Update transition start marker
+  // Update transition marker — always purple, position depends on shorten state
   const marker = $("scrub-marker");
-  if (!fadeToPause && $("transition-enabled").checked && d > 0 && isFinite(d)
-      && transState.triggerAt !== null && !transState.active) {
-    marker.style.left = `${(transState.triggerAt / d) * 100}%`;
+  const tpChip = $("transition-point-chip");
+  if (!fadeToPause && $("transition-enabled").checked && d > 0 && isFinite(d) && !transState.active) {
+    const markerTime = ($("shorten-enabled").checked && transState.manualTriggerAt !== null)
+      ? transState.manualTriggerAt
+      : (transState.triggerAt !== null ? transState.triggerAt : d - (transState.plannedDur || 30));
+    marker.style.left = `${(markerTime / d) * 100}%`;
     marker.style.display = "";
-    marker.classList.toggle("manual", transState.manualTriggerAt !== null);
+    marker.classList.remove("manual"); // always purple
+    if (tpChip && state.playing && $("shorten-enabled").checked) {
+      tpChip.textContent = fmt(markerTime);
+      tpChip.style.display = "";
+    } else if (tpChip) {
+      tpChip.style.display = "none";
+    }
   } else {
     marker.style.display = "none";
+    if (tpChip) tpChip.style.display = "none";
   }
 
-  // Update start point marker
+  // Update start point marker — only when shorten is on
   const startMarker = $("start-marker");
   if ($("shorten-enabled").checked && transState.manualStartAt !== null && d > 0 && isFinite(d)) {
     startMarker.style.left = `${(transState.manualStartAt / d) * 100}%`;
@@ -1851,6 +1929,12 @@ $("transition-enabled").addEventListener("change", () => {
 function onShortenToggled() {
   const on = $("shorten-enabled").checked;
   const d  = audio.duration || 0;
+  updateControlsRow();
+  // Redraw waveform so it renders immediately and marker/chip reposition on next tick
+  if (state.playing) drawWaveform(state.playing.sig);
+  // Refresh lists so shortened durations appear/disappear
+  renderItems();
+  renderPlaylists();
   if (!on) {
     // Restore the natural d - plannedDur trigger point
     if (transState.plannedDur !== null && d > 0 && !transState.active && !transState.armed) {
@@ -1860,18 +1944,15 @@ function onShortenToggled() {
   }
   // Turning on — only touches the current song if a transition isn't already in flight
   if (!state.playing || transState.active || transState.armed) return;
-  // Manual trigger takes priority over dip analysis
+  // manualTriggerAt is always stored dip; if present, apply directly
   if (transState.manualTriggerAt !== null) {
     if (transState.manualTriggerAt > audio.currentTime) {
       transState.triggerAt = transState.manualTriggerAt;
     }
     return;
   }
-  if (transState.dipTime !== null) {
-    // Already have a cached dip time — apply immediately (respects "already past it" rule)
-    applyDipToTransition(transState.dipTime, d);
-  } else if (!transState.dipAnalyzing && transState.plannedDur !== null) {
-    // plannedDur is set but no analysis started yet — kick one off now
+  // No stored point yet — analysis may still be running; kick one off if not
+  if (!transState.dipAnalyzing && transState.plannedDur !== null) {
     transState.dipAnalyzing = true;
     const _item = state.playing.item;
     const _sig  = state.playing.sig;
@@ -1880,8 +1961,14 @@ function onShortenToggled() {
       if (!state.playing || state.playing.sig !== _sig) return;
       transState.dipTime = t;
       drawWaveform(_sig);
-      if ($("shorten-enabled").checked && transState.manualTriggerAt === null)
-        applyDipToTransition(t, audio.duration || 0);
+      if (t !== null && transState.manualTriggerAt === null) {
+        transState.manualTriggerAt = t;
+        _item.transition_point = t;
+        api("POST", "/api/transition-point", { playlist: _item.playlist, id: _item.id, time: t }).catch(() => {});
+        if ($("shorten-enabled").checked && !transState.active && !transState.armed && t > audio.currentTime) {
+          transState.triggerAt = t;
+        }
+      }
     }).catch(() => { transState.dipAnalyzing = false; });
   }
   // If dipAnalyzing is already running, the .then() callback will apply
@@ -1901,6 +1988,20 @@ $("add-in-point-btn").addEventListener("click", async () => {
   api("POST", "/api/start-point", { playlist: it.playlist, id: it.id, time: newTime })
     .then(() => toast(`Start point set to ${fmt(newTime)}`))
     .catch(() => toast("Failed to save start point."));
+});
+
+/* --------------------------------------------------- clear in-point by clicking chip */
+$("start-point-chip").addEventListener("click", async () => {
+  if (!state.playing) return;
+  transState.manualStartAt = null;
+  $("start-marker").style.display = "none";
+  const it = state.playing.item;
+  it.start_point = null;
+  updateControlsRow();
+  try {
+    await api("POST", "/api/start-point", { playlist: it.playlist, id: it.id, time: null });
+    toast("Start point cleared.");
+  } catch (_) { toast("Failed to clear start point."); }
 });
 
 /* ------------------------------------------------- quick intro toggle */
@@ -2011,26 +2112,31 @@ function initScrubMarkerDrag() {
     } catch (_) { toast("Failed to save transition point."); }
   });
 
-  // Double-click the marker to clear the manual override
+  // Double-click the marker to reset to fresh dip analysis
   marker.addEventListener("dblclick", async (e) => {
     e.stopPropagation();
     if (!state.playing) return;
-    transState.manualTriggerAt = null;
-    marker.classList.remove("manual");
-    // Restore natural or dip trigger
-    const d = audio.duration || 0;
-    if ($("shorten-enabled").checked && transState.dipTime !== null) {
-      applyDipToTransition(transState.dipTime, d);
-    } else if (transState.plannedDur !== null && d > 0) {
-      transState.triggerAt = d - transState.plannedDur;
+    const it  = state.playing.item;
+    const _sig = state.playing.sig;
+    transState.dipAnalyzing = true;
+    const t = await analyzeDipTime(it).catch(() => null);
+    transState.dipAnalyzing = false;
+    if (!state.playing || state.playing.sig !== _sig) return;
+    transState.dipTime = t;
+    drawWaveform(_sig);
+    if (t !== null) {
+      transState.manualTriggerAt = t;
+      it.transition_point = t;
+      const d = audio.duration || 0;
+      if ($("shorten-enabled").checked && !transState.active && !transState.armed && t > audio.currentTime) {
+        transState.triggerAt = t;
+      }
+      updateClearPointsBtn();
+      try {
+        await api("POST", "/api/transition-point", { playlist: it.playlist, id: it.id, time: t });
+        toast(`Transition point reset to ${fmt(t)}`);
+      } catch (_) {}
     }
-    const it = state.playing.item;
-    it.transition_point = null;
-    updateClearPointsBtn();
-    try {
-      await api("POST", "/api/transition-point", { playlist: it.playlist, id: it.id, time: null });
-      toast("Transition point cleared.");
-    } catch (_) {}
   });
 
   /* ---- start-point marker drag ---- */
@@ -2092,34 +2198,6 @@ function initScrubMarkerDrag() {
     } catch (_) {}
   });
 }
-
-/* ------------------------------------------------- clear both custom points */
-$("clear-points-btn").addEventListener("click", async () => {
-  if (!state.playing) return;
-  const it = state.playing.item;
-  const hadStart   = transState.manualStartAt !== null;
-  const hadTrigger = transState.manualTriggerAt !== null;
-
-  transState.manualStartAt   = null;
-  transState.manualTriggerAt = null;
-  $("start-marker").style.display = "none";
-  $("scrub-marker").classList.remove("manual");
-
-  // Restore natural or dip-based trigger
-  const d = audio.duration || 0;
-  if ($("shorten-enabled").checked && transState.dipTime !== null) {
-    applyDipToTransition(transState.dipTime, d);
-  } else if (transState.plannedDur !== null && d > 0) {
-    transState.triggerAt = d - transState.plannedDur;
-  }
-  updateClearPointsBtn();
-
-  const saves = [];
-  if (hadStart)   { it.start_point = null;   saves.push(api("POST", "/api/start-point",      { playlist: it.playlist, id: it.id, time: null })); }
-  if (hadTrigger) { it.transition_point = null; saves.push(api("POST", "/api/transition-point", { playlist: it.playlist, id: it.id, time: null })); }
-  try { await Promise.all(saves); toast("Custom points cleared."); }
-  catch (_) { toast("Failed to clear some points."); }
-});
 
 /* ------------------------------------------------------------- startup */
 setAppColumns();
