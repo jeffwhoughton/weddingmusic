@@ -155,6 +155,7 @@ let audioCtx = null;
 let srcA = null, srcB = null;
 let gainA = null, gainB = null;
 let hpfA  = null, lpfB  = null;
+let masterBus = null, compressor = null;
 
 const transState = {
   active:     false,   // transition currently running
@@ -181,14 +182,28 @@ function initWebAudio() {
   gainA = audioCtx.createGain();  gainA.gain.value = 1.0;
   hpfA  = audioCtx.createBiquadFilter();
   hpfA.type = "highpass"; hpfA.frequency.value = 20; hpfA.Q.value = 0.5;
-  srcA.connect(hpfA); hpfA.connect(gainA); gainA.connect(audioCtx.destination);
+  srcA.connect(hpfA); hpfA.connect(gainA);
 
   // Deck B — incoming / transition audio
   srcB  = audioCtx.createMediaElementSource(audiob);
   gainB = audioCtx.createGain();  gainB.gain.value = 0.0;
   lpfB  = audioCtx.createBiquadFilter();
   lpfB.type = "lowpass"; lpfB.frequency.value = 280; lpfB.Q.value = 2.2;
-  srcB.connect(lpfB); lpfB.connect(gainB); gainB.connect(audioCtx.destination);
+  srcB.connect(lpfB); lpfB.connect(gainB);
+
+  // Master bus with soft limiting — prevents clipping when both decks overlap
+  compressor = audioCtx.createDynamicsCompressor();
+  compressor.threshold.value = -3;    // dBFS: kicks in around 70% amplitude
+  compressor.knee.value      = 6;     // soft knee for a natural, musical response
+  compressor.ratio.value     = 12;    // 12:1 — near-limiting behaviour
+  compressor.attack.value    = 0.003; // 3 ms fast attack catches transient peaks
+  compressor.release.value   = 0.20;  // 200 ms release
+  masterBus = audioCtx.createGain();
+  masterBus.gain.value = 1.0;
+  gainA.connect(masterBus);
+  gainB.connect(masterBus);
+  masterBus.connect(compressor);
+  compressor.connect(audioCtx.destination);
 }
 
 function computeTransitionDuration(item) {
@@ -481,7 +496,7 @@ function startTransition(nextItem) {
   const currentItem   = state.playing ? state.playing.item : null;
   const hasLongOutro  = !!(currentItem && currentItem.long_outro);
   const hasQuickIntro = !!nextItem.quick_intro;
-  const EXTRA = hasLongOutro ? 4.0 : 0;
+  const EXTRA = hasLongOutro ? 6.0 : 0;
 
   // ---- Deck A out (driven by outgoing track's long_outro + incoming quick_intro) ----
   if (hasQuickIntro) {
@@ -503,12 +518,13 @@ function startTransition(nextItem) {
     gainA.gain.setValueAtTime(1.0, now);
     gainA.gain.setValueAtTime(1.0, now + LINGER);
     if (hasLongOutro) {
-      gainA.gain.linearRampToValueAtTime(0.7,  now + CUT * 0.5);
-      gainA.gain.linearRampToValueAtTime(0.55, now + CUT);           // still present when B hits full
+      // Fade A out faster so it's at low gain when B hits full volume
+      gainA.gain.linearRampToValueAtTime(0.5,  now + CUT * 0.4);
+      gainA.gain.linearRampToValueAtTime(0.22, now + CUT);           // kept low while B is at full
       gainA.gain.linearRampToValueAtTime(0.0,  now + CUT + EXTRA);
     } else {
-      gainA.gain.linearRampToValueAtTime(0.5, now + CUT * 0.5);
-      gainA.gain.linearRampToValueAtTime(0.0, now + CUT);
+      gainA.gain.linearRampToValueAtTime(0.4, now + CUT * 0.4);
+      gainA.gain.linearRampToValueAtTime(0.0, now + CUT * 0.85);
     }
 
     const deckAEnd   = hasLongOutro ? CUT + EXTRA : CUT;
@@ -536,8 +552,9 @@ function startTransition(nextItem) {
     gainA.gain.setValueAtTime(1.0, now);
     gainA.gain.setValueAtTime(1.0, now + T * 0.18);
     if (hasLongOutro) {
-      gainA.gain.linearRampToValueAtTime(0.7,  now + T * 0.6);
-      gainA.gain.linearRampToValueAtTime(0.55, now + T);
+      // Bring A down further before the long vocal tail so B isn't fighting it
+      gainA.gain.linearRampToValueAtTime(0.55, now + T * 0.6);
+      gainA.gain.linearRampToValueAtTime(0.28, now + T);
       gainA.gain.linearRampToValueAtTime(0.0,  now + T + EXTRA);
     } else {
       gainA.gain.linearRampToValueAtTime(0.5, now + T * 0.6);
@@ -560,8 +577,8 @@ function startTransition(nextItem) {
     lpfB.frequency.setValueAtTime(20000, now);
     gainB.gain.setValueAtTime(0.0, now);
     gainB.gain.setValueAtTime(0.0, now + DROP);
-    gainB.gain.linearRampToValueAtTime(0.6,  now + CUT * 0.3);
-    gainB.gain.linearRampToValueAtTime(1.0,  now + CUT * 0.5);  // full at halfway
+    gainB.gain.linearRampToValueAtTime(0.5,  now + CUT * 0.35); // rise starts when A is already low
+    gainB.gain.linearRampToValueAtTime(1.0,  now + CUT * 0.6);  // reach full after A has faded well down
   } else {
     // Normal resonant LPF sweep
     lpfB.frequency.setValueAtTime(280, now);
@@ -587,7 +604,7 @@ function startTransition(nextItem) {
   $("next-preview").style.display = "";
 
   const _currentItem    = state.playing ? state.playing.item : null;
-  const _longOutroExtra = (_currentItem && _currentItem.long_outro) ? 4.0 : 0;
+  const _longOutroExtra = (_currentItem && _currentItem.long_outro) ? 6.0 : 0;
   const tMs = nextItem.quick_intro
     ? (Math.min(T, 4.0) + _longOutroExtra) * 1000
     : (T + _longOutroExtra) * 1000;
