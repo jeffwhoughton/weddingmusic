@@ -5,7 +5,7 @@ from mutagen import File as MutagenFile
 from app import read_audio_meta, sanitize
 
 def fix_reception_corrupted_files():
-    folder = Path("playlists/Reception 3")
+    folder = Path("playlists/Wedding Reception")
     pattern = re.compile(r"^\.?stage_[a-f0-9]+_(\d+)(?:\.\w+)?$")
     
     counter = 1

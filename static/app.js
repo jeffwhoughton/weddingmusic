@@ -498,43 +498,44 @@ function startTransition(nextItem) {
   const hasQuickIntro = !!nextItem.quick_intro;
   const EXTRA = hasLongOutro ? 6.0 : 0;
 
-  // ---- Deck A out (driven by outgoing track's long_outro + incoming quick_intro) ----
+  // ---- Deck A out ----
   if (hasQuickIntro) {
-    const CUT    = Math.min(T, 4.0);
-    const LINGER = CUT * 0.18;
+    // B has a recognizable intro that must be heard from the start.
+    // A steps aside fast: cut the bass first to open sonic space, then pull the volume
+    // so B's intro is clearly audible. Long outro keeps A as a faint background presence.
+    const CUT = Math.min(T, 4.0);
 
     hpfA.frequency.setValueAtTime(20, now);
-    hpfA.frequency.setValueAtTime(20, now + LINGER);
     if (hasLongOutro) {
-      // Gentle bass cut during CUT, then vocal tail fades out over EXTRA
-      hpfA.frequency.exponentialRampToValueAtTime(400,  now + CUT * 0.5);
-      hpfA.frequency.exponentialRampToValueAtTime(700,  now + CUT);
+      // Slower bass cut — A should still sound like a real song trailing out, not a ghost
+      hpfA.frequency.exponentialRampToValueAtTime(120,  now + CUT * 0.30);
+      hpfA.frequency.exponentialRampToValueAtTime(400,  now + CUT);
       hpfA.frequency.exponentialRampToValueAtTime(3500, now + CUT + EXTRA);
     } else {
-      hpfA.frequency.exponentialRampToValueAtTime(700,  now + CUT * 0.55);
-      hpfA.frequency.exponentialRampToValueAtTime(4500, now + CUT);
+      hpfA.frequency.exponentialRampToValueAtTime(300,  now + CUT * 0.18); // bass gone early
+      hpfA.frequency.exponentialRampToValueAtTime(1800, now + CUT * 0.50);
+      hpfA.frequency.exponentialRampToValueAtTime(5000, now + CUT * 0.80);
     }
 
     gainA.gain.setValueAtTime(1.0, now);
-    gainA.gain.setValueAtTime(1.0, now + LINGER);
     if (hasLongOutro) {
-      // Fade A out faster so it's at low gain when B hits full volume
-      gainA.gain.linearRampToValueAtTime(0.5,  now + CUT * 0.4);
-      gainA.gain.linearRampToValueAtTime(0.22, now + CUT);           // kept low while B is at full
+      // A drops to an audible background level as B's intro starts, then trails out fully over EXTRA
+      gainA.gain.linearRampToValueAtTime(0.55, now + CUT * 0.30); // still clearly present
+      gainA.gain.linearRampToValueAtTime(0.38, now + CUT);        // behind B but audible
       gainA.gain.linearRampToValueAtTime(0.0,  now + CUT + EXTRA);
     } else {
-      gainA.gain.linearRampToValueAtTime(0.4, now + CUT * 0.4);
-      gainA.gain.linearRampToValueAtTime(0.0, now + CUT * 0.85);
+      gainA.gain.linearRampToValueAtTime(0.18, now + CUT * 0.35);
+      gainA.gain.linearRampToValueAtTime(0.0,  now + CUT * 0.80);
     }
 
-    const deckAEnd   = hasLongOutro ? CUT + EXTRA : CUT;
-    const rampStartQI = Date.now() + LINGER * 1000;
-    const rampMsQI    = (deckAEnd - LINGER) * 900;
+    // Subtle pitch-up on A as it exits — "throwing off the record" DJ feel
+    const _deckAEndQI  = hasLongOutro ? CUT + EXTRA : CUT * 0.80;
+    const _rampStartQI = Date.now();
+    const _rampMsQI    = _deckAEndQI * 850;
     const rateIntervalQI = setInterval(() => {
-      const t = Date.now() - rampStartQI;
-      if (t < 0) return;
-      if (t >= rampMsQI || !transState.active) { clearInterval(rateIntervalQI); return; }
-      audio.playbackRate = 1 + (t / rampMsQI) * 0.08;
+      const t = Date.now() - _rampStartQI;
+      if (t >= _rampMsQI || !transState.active) { clearInterval(rateIntervalQI); return; }
+      audio.playbackRate = 1 + (t / _rampMsQI) * 0.09;
     }, 50);
 
   } else {
@@ -570,15 +571,16 @@ function startTransition(nextItem) {
     }, 50);
   }
 
-  // ---- Deck B in (driven purely by incoming track's quick_intro) ----
+  // ---- Deck B in ----
   if (hasQuickIntro) {
-    const CUT  = Math.min(T, 4.0);
-    const DROP = CUT * 0.06;
+    // No LPF sweep — open the full spectrum immediately so the intro is heard clearly.
+    // B becomes audible right away and reaches full volume within ~2 s,
+    // while A is already stepping back out of the way.
     lpfB.frequency.setValueAtTime(20000, now);
-    gainB.gain.setValueAtTime(0.0, now);
-    gainB.gain.setValueAtTime(0.0, now + DROP);
-    gainB.gain.linearRampToValueAtTime(0.5,  now + CUT * 0.35); // rise starts when A is already low
-    gainB.gain.linearRampToValueAtTime(1.0,  now + CUT * 0.6);  // reach full after A has faded well down
+    gainB.gain.setValueAtTime(0.0,  now);
+    gainB.gain.linearRampToValueAtTime(0.45, now + 0.30);  // noticeable immediately
+    gainB.gain.linearRampToValueAtTime(0.85, now + 1.20);  // mostly up as A steps back
+    gainB.gain.linearRampToValueAtTime(1.0,  now + 2.00);  // full by 2 s
   } else {
     // Normal resonant LPF sweep
     lpfB.frequency.setValueAtTime(280, now);
