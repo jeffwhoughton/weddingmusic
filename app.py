@@ -229,6 +229,8 @@ TRANSITION_TAG_KEY   = "PS_TRANSITION"
 START_TAG_KEY        = "PS_START"
 QUICK_INTRO_TAG_KEY  = "PS_QUICK_INTRO"
 LONG_OUTRO_TAG_KEY   = "PS_LONG_OUTRO"
+BPM_OUTRO_TAG_KEY    = "PS_BPM_OUTRO"
+BPM_TAG_KEY          = "PS_BPM"
 
 
 def _read_custom_tag(path: Path, tag_key: str):
@@ -361,6 +363,27 @@ def write_long_outro(path: Path, value: bool):
     _write_custom_tag(path, LONG_OUTRO_TAG_KEY, 1.0 if value else None)
 
 
+def read_bpm_outro(path: Path) -> bool:
+    """Return True if the song is tagged for BPM-matched outro."""
+    val = _read_custom_tag(path, BPM_OUTRO_TAG_KEY)
+    return val is not None and val > 0.5
+
+
+def write_bpm_outro(path: Path, value: bool):
+    """Set or remove the BPM-outro tag."""
+    _write_custom_tag(path, BPM_OUTRO_TAG_KEY, 1.0 if value else None)
+
+
+def read_manual_bpm(path: Path):
+    """Return manually-set BPM float, or None."""
+    return _read_custom_tag(path, BPM_TAG_KEY)
+
+
+def write_manual_bpm(path: Path, bpm):
+    """Set or remove the manual BPM tag."""
+    _write_custom_tag(path, BPM_TAG_KEY, bpm)
+
+
 # --------------------------------------------------------------------------- #
 #  Item serialization
 # --------------------------------------------------------------------------- #
@@ -412,6 +435,8 @@ def serialize_item(playlist: str, filename: str):
         "start_point": read_start_point(fp),
         "quick_intro": read_quick_intro(fp),
         "long_outro": read_long_outro(fp),
+        "bpm_outro": read_bpm_outro(fp),
+        "manual_bpm": read_manual_bpm(fp),
     }
 
 
@@ -734,6 +759,39 @@ def api_set_long_outro():
         abort(404)
     write_long_outro(fp, value)
     return jsonify({"ok": True, "long_outro": value})
+
+
+@app.post("/api/bpm-outro")
+def api_set_bpm_outro():
+    data = request.get_json(force=True)
+    playlist = data.get("playlist", "")
+    item_id  = data.get("id", "")
+    value    = bool(data.get("value", False))
+    fp = playlist_path(playlist) / item_id
+    if not fp.exists() or not is_song(item_id):
+        abort(404)
+    write_bpm_outro(fp, value)
+    return jsonify({"ok": True, "bpm_outro": value})
+
+
+@app.post("/api/bpm")
+def api_set_bpm():
+    data = request.get_json(force=True)
+    playlist = data.get("playlist", "")
+    item_id  = data.get("id", "")
+    bpm_val  = data.get("bpm")   # float or None
+    fp = playlist_path(playlist) / item_id
+    if not fp.exists() or not is_song(item_id):
+        abort(404)
+    if bpm_val is not None:
+        try:
+            bpm_val = float(bpm_val)
+            if bpm_val <= 0:
+                abort(400, "BPM must be positive")
+        except (TypeError, ValueError):
+            abort(400, "Invalid BPM value")
+    write_manual_bpm(fp, bpm_val)
+    return jsonify({"ok": True, "manual_bpm": bpm_val})
 
 
 @app.post("/api/song")

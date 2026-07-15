@@ -312,6 +312,10 @@ body::after {
   font-size: 14px; letter-spacing: 0.04em; color: var(--gold-soft);
   text-transform: uppercase; padding: 2px 4px;
 }
+.divider .dur {
+  font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums;
+  padding: 0 4px;
+}
 .divider .label-input {
   font-family: 'Fraunces', serif; font-style: italic; font-size: 14px;
   letter-spacing: 0.04em; color: var(--cream); background: var(--panel-2);
@@ -626,7 +630,8 @@ span.point-chip {
 }
 .add-in-point-btn:hover { color: rgba(90,210,150,0.9); border-color: rgba(90,210,150,0.5); }
 .quick-intro-btn,
-.long-outro-btn {
+.long-outro-btn,
+.bpm-outro-btn {
   background: none;
   border: 1px solid var(--line-strong);
   color: var(--muted);
@@ -636,7 +641,8 @@ span.point-chip {
   transition: color .15s, border-color .15s, background .15s, box-shadow .15s;
 }
 .quick-intro-btn:hover,
-.long-outro-btn:hover {
+.long-outro-btn:hover,
+.bpm-outro-btn:hover {
   color: var(--cream-dim); border-color: var(--cream-dim);
 }
 .quick-intro-btn.active {
@@ -650,6 +656,36 @@ span.point-chip {
   border-color: rgba(80, 180, 255, 0.7);
   background: rgba(80, 180, 255, 0.1);
   box-shadow: 0 0 8px rgba(80, 180, 255, 0.25);
+}
+.bpm-outro-btn.active {
+  color: #b8a0ff;
+  border-color: rgba(160, 120, 255, 0.7);
+  background: rgba(160, 120, 255, 0.1);
+  box-shadow: 0 0 8px rgba(160, 120, 255, 0.25);
+}
+.bpm-input {
+  width: 52px;
+  background: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 20px;
+  color: var(--cream-dim);
+  font-size: 11.5px; font-family: inherit;
+  padding: 4px 10px;
+  text-align: center;
+  letter-spacing: 0.06em;
+  -moz-appearance: textfield;
+  appearance: textfield;
+  transition: border-color .15s, color .15s, box-shadow .15s;
+}
+.bpm-input::-webkit-outer-spin-button,
+.bpm-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.bpm-input::placeholder { color: var(--muted); }
+.bpm-input:hover { border-color: var(--cream-dim); }
+.bpm-input:focus {
+  outline: none;
+  border-color: rgba(160, 120, 255, 0.7);
+  box-shadow: 0 0 6px rgba(160, 120, 255, 0.2);
+  color: #b8a0ff;
 }
 
 /* Fade-to-pause toggle button */

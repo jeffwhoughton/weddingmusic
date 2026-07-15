@@ -43,8 +43,11 @@ let locked = false;           // lock screen mode
 let fadeToPause = false;      // pause at start of next track instead of playing
 const LOCK_PASSWORD = "1235";
 
-// Waveform data cache: sig → { data: Float32Array, winSec, duration, dipTime }
+// Waveform data cache: sig → { data: Float32Array, winSec, duration, dipTime, bpm }
 const waveformCache = new Map();
+
+// Tracks sigs currently being analyzed to prevent redundant concurrent fetches
+const analysisInFlight = new Set();
 
 // Cache of loaded items per playlist (for shortened-duration totals in col 1)
 const playlistItemsCache = new Map();
@@ -221,6 +224,10 @@ function computeTransitionDuration(item) {
 async function analyzeDipTime(item) {
   const duration = item.duration || 0;
   if (duration < 10) return null;
+  const _sig = sigOf(item);
+  if (waveformCache.has(_sig)) return waveformCache.get(_sig).dipTime ?? null;
+  if (analysisInFlight.has(_sig)) return null;
+  analysisInFlight.add(_sig);
   try {
     const resp = await fetch(item.audio_url);
     if (!resp.ok) return null;
@@ -243,6 +250,37 @@ async function analyzeDipTime(item) {
       const nch = decoded.numberOfChannels;
       for (let i = 0; i < len; i++) mono[i] /= nch;
     }
+
+    // BPM analysis via onset detection + autocorrelation on raw mono energy.
+    // Uses 23 ms hop windows (finer than the 100 ms waveform windows) to resolve beats.
+    // Scans 60–180 BPM range, then folds the result to 75–150 to avoid half/double errors.
+    const bpmWinSec = 0.023;
+    const bpmWinS   = Math.floor(bpmWinSec * sr);
+    // Analyse at most the first 60 s for speed
+    const bpmNumW   = Math.min(Math.floor(len / bpmWinS), Math.floor(60 / bpmWinSec));
+    const bpmEnergy = new Float32Array(bpmNumW);
+    for (let w = 0; w < bpmNumW; w++) {
+      let sq = 0, s0 = w * bpmWinS;
+      for (let i = s0; i < s0 + bpmWinS; i++) sq += mono[i] * mono[i];
+      bpmEnergy[w] = Math.sqrt(sq / bpmWinS);
+    }
+    // Half-wave rectified energy flux (onset strength function)
+    const bpmOnset = new Float32Array(bpmNumW);
+    for (let w = 1; w < bpmNumW; w++) bpmOnset[w] = Math.max(0, bpmEnergy[w] - bpmEnergy[w - 1]);
+    // Autocorrelation across the 60–180 BPM lag range
+    const bpmMinLag = Math.max(1, Math.floor((60.0 / 180) / bpmWinSec));
+    const bpmMaxLag = Math.ceil((60.0 / 60)  / bpmWinSec);
+    let bpmBestLag = bpmMinLag, bpmBestCorr = -Infinity;
+    for (let lag = bpmMinLag; lag <= Math.min(bpmMaxLag, bpmNumW - 1); lag++) {
+      let corr = 0;
+      for (let w = 0; w + lag < bpmNumW; w++) corr += bpmOnset[w] * bpmOnset[w + lag];
+      if (corr > bpmBestCorr) { bpmBestCorr = corr; bpmBestLag = lag; }
+    }
+    let finalBpm = 60.0 / (bpmBestLag * bpmWinSec);
+    // Fold to 75–150 BPM to avoid half/double-tempo detection errors
+    while (finalBpm > 150) finalBpm /= 2;
+    while (finalBpm < 75)  finalBpm *= 2;
+    finalBpm = Math.round(finalBpm * 10) / 10;
 
     // 1st-order IIR high-pass ~250 Hz — strips kick/bass, keeps vocals & mids
     // α = RC / (RC + dt),  RC = 1 / (2π·fc)
@@ -323,10 +361,11 @@ async function analyzeDipTime(item) {
     const p95ForNorm = sortedForNorm[Math.floor(sortedForNorm.length * 0.95)] || 0.001;
     const normWaveform = new Float32Array(numW);
     for (let w = 0; w < numW; w++) normWaveform[w] = Math.min(1, smo[w] / p95ForNorm);
-    waveformCache.set(sigOf(item), { data: normWaveform, winSec, duration, dipTime: dipResult });
+    waveformCache.set(sigOf(item), { data: normWaveform, winSec, duration, dipTime: dipResult, bpm: finalBpm });
 
     return dipResult;
   } catch (_) { return null; }
+  finally { analysisInFlight.delete(sigOf(item)); }
 }
 
 // Apply a found dip time to transState.triggerAt if the playhead hasn't
@@ -407,11 +446,21 @@ function updateControlsRow() {
     $("add-in-point-btn").style.display = "none";
   }
 
-  // Quick-intro / long-outro buttons — reflect saved tags, always visible
+  // Quick-intro / long-outro / bpm-outro buttons — reflect saved tags, always visible
   const qiBtn = $("quick-intro-btn");
   const loBtn = $("long-outro-btn");
+  const boBtn = $("bpm-outro-btn");
   if (qiBtn) qiBtn.classList.toggle("active", !!it.quick_intro);
   if (loBtn) loBtn.classList.toggle("active", !!it.long_outro);
+  if (boBtn) boBtn.classList.toggle("active", !!it.bpm_outro);
+
+  // BPM input — manual BPM in value field, detected BPM as placeholder only
+  const bpmInput = $("bpm-input");
+  if (bpmInput && document.activeElement !== bpmInput) {
+    const detectedBpm = waveformCache.get(sigOf(it))?.bpm;
+    bpmInput.value       = it.manual_bpm ? String(Math.round(it.manual_bpm)) : "";
+    bpmInput.placeholder = detectedBpm   ? String(Math.round(detectedBpm))   : "BPM";
+  }
 }
 // Keep old name as alias so any missed call sites still work
 const updateClearPointsBtn = updateControlsRow;
@@ -498,6 +547,24 @@ function startTransition(nextItem) {
   const hasQuickIntro = !!nextItem.quick_intro;
   const EXTRA = hasLongOutro ? 6.0 : 0;
 
+  // BPM outro: compute target playback-rate ratio for Track A.
+  // When bpm_outro is on, A's speed ramps to match B's tempo so the beats
+  // align during the overlap — a real DJ pitch-lock move.
+  // Falls back to the default +9% "throwing the record" feel if BPM data
+  // isn't cached yet for either deck.
+  const _hasBpmOutro = !!(currentItem && currentItem.bpm_outro);
+  let bpmRateExtra = 0.09; // default: subtle speed-up as A exits
+  if (_hasBpmOutro) {
+    // Prefer manually-set BPM; fall back to auto-detected from waveformCache
+    const _bpmA = currentItem.manual_bpm || waveformCache.get(sigOf(currentItem))?.bpm;
+    const _bpmB = nextItem.manual_bpm    || waveformCache.get(sigOf(nextItem))?.bpm;
+    if (_bpmA && _bpmB && _bpmA > 0) {
+      // Clamp to ±25 % to avoid extreme pitch shifts
+      const ratio = Math.max(0.75, Math.min(1.25, _bpmB / _bpmA));
+      bpmRateExtra = ratio - 1.0;
+    }
+  }
+
   // ---- Deck A out ----
   if (hasQuickIntro) {
     // B has a recognizable intro that must be heard from the start.
@@ -529,13 +596,14 @@ function startTransition(nextItem) {
     }
 
     // Subtle pitch-up on A as it exits — "throwing off the record" DJ feel
+    // (or a true BPM-matched ramp when bpm_outro is on)
     const _deckAEndQI  = hasLongOutro ? CUT + EXTRA : CUT * 0.80;
     const _rampStartQI = Date.now();
     const _rampMsQI    = _deckAEndQI * 850;
     const rateIntervalQI = setInterval(() => {
       const t = Date.now() - _rampStartQI;
       if (t >= _rampMsQI || !transState.active) { clearInterval(rateIntervalQI); return; }
-      audio.playbackRate = 1 + (t / _rampMsQI) * 0.09;
+      audio.playbackRate = 1 + (t / _rampMsQI) * bpmRateExtra;
     }, 50);
 
   } else {
@@ -567,7 +635,7 @@ function startTransition(nextItem) {
     const rateInterval = setInterval(() => {
       const t = Date.now() - rampStart;
       if (t >= rampMs || !transState.active) { clearInterval(rateInterval); return; }
-      audio.playbackRate = 1 + (t / rampMs) * 0.09;
+      audio.playbackRate = 1 + (t / rampMs) * bpmRateExtra;
     }, 50);
   }
 
@@ -751,6 +819,14 @@ async function updateNextPreview() {
     el.classList.remove("disabled");
     el.onclick = null;
   } : null;
+
+  // Pre-analyze Track B so BPM is ready when a bpm_outro transition fires
+  if (state.playing && state.playing.item.bpm_outro) {
+    const _bSig = sigOf(next);
+    if (!waveformCache.has(_bSig) && !analysisInFlight.has(_bSig)) {
+      analyzeDipTime(next).catch(() => {});
+    }
+  }
 }
 
 /* ------------------------------------ shortened-duration helpers */
@@ -954,7 +1030,12 @@ function renderItems() {
   for (let _i = 0; _i < state.items.length; _i++) {
     const it = state.items[_i];
     if (it.type === "divider") {
-      list.appendChild(dividerEl(it, it.id === loneDivider));
+      const segmentItems = [];
+      for (let j = _i + 1; j < state.items.length; j++) {
+        if (state.items[j].type === "divider") break;
+        if (state.items[j].type === "song") segmentItems.push(state.items[j]);
+      }
+      list.appendChild(dividerEl(it, it.id === loneDivider, segmentItems));
     } else {
       const sig = sigOf(it);
       const isBetween = _doFade && _i > _playIdx && _i < _ghnIdx;
@@ -1078,11 +1159,22 @@ function ghostQueueNextEl(it) {
   return row;
 }
 
-function dividerEl(it, editing) {
+function dividerEl(it, editing, segmentItems = []) {
   const el = document.createElement("div");
   el.className = "divider" + (state.selection.has(it.id) ? " selected" : "");
   el.draggable = !editing && !expanded;
   el.dataset.id = it.id;
+
+  const segmentDur = segmentItems.length > 0 ? playlistTotal(segmentItems) : 0;
+  const segmentShortDur = segmentItems.length > 0 ? shortenedPlaylistTotal(segmentItems) : 0;
+  const _shortenOn = $("shorten-enabled").checked;
+
+  let durHtml = "";
+  if (segmentDur > 0) {
+    let durStr = fmt(segmentDur);
+    if (_shortenOn) durStr += shortDurHtml(segmentShortDur, segmentDur);
+    durHtml = `<div class="dur">${durStr}</div>`;
+  }
 
   const checked = state.selection.has(it.id) ? "checked" : "";
   const labelHtml = editing
@@ -1092,7 +1184,8 @@ function dividerEl(it, editing) {
     <input type="checkbox" class="chk" ${checked}>
     <div class="line"></div>
     ${labelHtml}
-    <div class="line"></div>`;
+    <div class="line"></div>
+    ${durHtml}`;
 
   el.querySelector(".chk").addEventListener("click", (e) => {
     e.stopPropagation(); toggleSelect(it.id, e);
@@ -1279,6 +1372,8 @@ function playSong(it) {
       if (!state.playing || state.playing.sig !== _sig) return;
       transState.dipTime = t;
       drawWaveform(_sig);
+      // Refresh BPM input now that detected BPM is available
+      if (state.playing && state.playing.sig === _sig) updateControlsRow();
       // If no transition_point was in metadata, save the calculated dip now
       if (transState.manualTriggerAt === null && t !== null) {
         transState.manualTriggerAt = t;
@@ -1781,15 +1876,30 @@ async function renderExpandedItems() {
   for (let si = 0; si < segments.length; si++) {
     const { plName, items } = segments[si];
 
+    const plTotal = playlistTotal(items);
+    const plShortTotal = shortenedPlaylistTotal(items);
+    const _shortenOn = $("shorten-enabled").checked;
+    let plDurHtml = "";
+    if (plTotal > 0) {
+      let durStr = fmt(plTotal);
+      if (_shortenOn) durStr += shortDurHtml(plShortTotal, plTotal);
+      plDurHtml = `<div class="dur">${durStr}</div>`;
+    }
+
     const hdr = document.createElement("div");
     hdr.className = "divider chain-divider";
-    hdr.innerHTML = `<div class="line"></div><span class="label">${esc(plName)}</span><div class="line"></div>`;
+    hdr.innerHTML = `<div class="line"></div><span class="label">${esc(plName)}</span><div class="line"></div>${plDurHtml}`;
     frag.appendChild(hdr);
 
     for (let _ei = 0; _ei < items.length; _ei++) {
       const it = items[_ei];
       if (it.type === "divider") {
-        frag.appendChild(dividerEl(it, false));
+        const segmentItems = [];
+        for (let j = _ei + 1; j < items.length; j++) {
+          if (items[j].type === "divider") break;
+          if (items[j].type === "song") segmentItems.push(items[j]);
+        }
+        frag.appendChild(dividerEl(it, false, segmentItems));
       } else {
         const sig = sigOf(it);
         const isPlaying = state.playing && sig === state.playing.sig;
@@ -2054,6 +2164,72 @@ $("long-outro-btn").addEventListener("click", async () => {
     it.long_outro = !newVal;
     $("long-outro-btn").classList.toggle("active", !newVal);
     toast("Failed to save.");
+  }
+});
+
+/* --------------------------------------------------- BPM outro toggle */
+$("bpm-outro-btn").addEventListener("click", async () => {
+  if (!state.playing) return;
+  const it = state.playing.item;
+  const newVal = !it.bpm_outro;
+  it.bpm_outro = newVal;
+  $("bpm-outro-btn").classList.toggle("active", newVal);
+  if (newVal) {
+    // Ensure Track A's BPM is analysed
+    const aSig = sigOf(it);
+    if (!waveformCache.has(aSig) && !analysisInFlight.has(aSig)) {
+      analyzeDipTime(it).catch(() => {});
+    }
+    // Pre-analyse Track B so BPM is ready before the transition fires
+    getNextSong().then(next => {
+      if (!next) return;
+      const bSig = sigOf(next);
+      if (!waveformCache.has(bSig) && !analysisInFlight.has(bSig)) {
+        analyzeDipTime(next).catch(() => {});
+      }
+    }).catch(() => {});
+  }
+  try {
+    await api("POST", "/api/bpm-outro", { playlist: it.playlist, id: it.id, value: newVal });
+    if (newVal) {
+      const bpmA = waveformCache.get(sigOf(it))?.bpm;
+      toast(bpmA ? `🎚 BPM outro on (${bpmA} BPM)` : "🎚 BPM outro on");
+    } else {
+      toast("BPM outro off");
+    }
+  } catch (_) {
+    it.bpm_outro = !newVal;
+    $("bpm-outro-btn").classList.toggle("active", !newVal);
+    toast("Failed to save.");
+  }
+});
+
+/* --------------------------------------------------- BPM input field */
+$("bpm-input").addEventListener("keydown", async (e) => {
+  if (e.key !== "Enter") return;
+  if (!state.playing) return;
+  const it = state.playing.item;
+  const raw = $("bpm-input").value.trim();
+  const bpmVal = raw === "" ? null : parseFloat(raw);
+  if (bpmVal !== null && (isNaN(bpmVal) || bpmVal <= 0)) {
+    toast("Enter a valid BPM (e.g. 128)");
+    return;
+  }
+  it.manual_bpm = bpmVal;
+  // Also update waveformCache entry so it's used immediately
+  const sig = sigOf(it);
+  if (waveformCache.has(sig)) {
+    const cached = waveformCache.get(sig);
+    waveformCache.set(sig, { ...cached, bpm: bpmVal ?? cached.bpm });
+  }
+  updateControlsRow();
+  try {
+    await api("POST", "/api/bpm", { playlist: it.playlist, id: it.id, bpm: bpmVal });
+    toast(bpmVal !== null ? `BPM set to ${bpmVal}` : "BPM cleared");
+  } catch (_) {
+    it.manual_bpm = null;
+    updateControlsRow();
+    toast("Failed to save BPM.");
   }
 });
 
