@@ -71,7 +71,10 @@
             <button id="add-in-point-btn" class="point-chip add-in-point-btn" title="Set in point to current position">+ in point</button>
             <button id="start-point-chip" class="point-chip start-point-chip" style="display:none" title="Click to clear start point"></button>
             <button id="quick-intro-btn" class="quick-intro-btn" title="Song has a quick/abrupt intro — fade it in fast">⚡ quick intro</button>
-            <button id="long-outro-btn" class="long-outro-btn" title="Vocals of this song hang on ~4s after the next track starts">🎶 long outro</button>
+            <span class="long-outro-control">
+              <button id="long-outro-btn" class="long-outro-btn" title="Vocals of this song hang on after the next track starts">🎶 long outro</button>
+              <input id="long-outro-seconds" class="long-outro-seconds" type="number" min="1" max="120" step="0.5" placeholder="6" title="Long outro length in seconds. Press Enter or click away to save.">
+            </span>
             <span   id="transition-point-chip" class="point-chip transition-point-chip" style="display:none" title="Out point"></span>
             <button id="bpm-outro-btn" class="bpm-outro-btn" title="Ramp Track A's speed to match Track B's BPM during the transition">🎚 BPM outro</button>
             <input  id="bpm-input" class="bpm-input" type="number" min="40" max="220" step="1" placeholder="BPM" title="Song BPM — type and press Enter to save. Overrides auto-detected BPM.">

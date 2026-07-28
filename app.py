@@ -14,6 +14,7 @@ metadata (mutagen); the filename is just a human-readable mirror.
 """
 
 import io
+import math
 import os
 import re
 import sys
@@ -229,6 +230,7 @@ TRANSITION_TAG_KEY   = "PS_TRANSITION"
 START_TAG_KEY        = "PS_START"
 QUICK_INTRO_TAG_KEY  = "PS_QUICK_INTRO"
 LONG_OUTRO_TAG_KEY   = "PS_LONG_OUTRO"
+LONG_OUTRO_SECONDS_TAG_KEY = "PS_LONG_OUTRO_SECONDS"
 BPM_OUTRO_TAG_KEY    = "PS_BPM_OUTRO"
 BPM_TAG_KEY          = "PS_BPM"
 
@@ -363,6 +365,17 @@ def write_long_outro(path: Path, value: bool):
     _write_custom_tag(path, LONG_OUTRO_TAG_KEY, 1.0 if value else None)
 
 
+def read_long_outro_seconds(path: Path):
+    """Return the saved long-outro tail length, or None for the default."""
+    value = _read_custom_tag(path, LONG_OUTRO_SECONDS_TAG_KEY)
+    return value if value is not None and math.isfinite(value) and value > 0 else None
+
+
+def write_long_outro_seconds(path: Path, seconds):
+    """Set or remove the saved long-outro tail length."""
+    _write_custom_tag(path, LONG_OUTRO_SECONDS_TAG_KEY, seconds)
+
+
 def read_bpm_outro(path: Path) -> bool:
     """Return True if the song is tagged for BPM-matched outro."""
     val = _read_custom_tag(path, BPM_OUTRO_TAG_KEY)
@@ -435,6 +448,7 @@ def serialize_item(playlist: str, filename: str):
         "start_point": read_start_point(fp),
         "quick_intro": read_quick_intro(fp),
         "long_outro": read_long_outro(fp),
+        "long_outro_seconds": read_long_outro_seconds(fp) or 6.0,
         "bpm_outro": read_bpm_outro(fp),
         "manual_bpm": read_manual_bpm(fp),
     }
@@ -759,6 +773,24 @@ def api_set_long_outro():
         abort(404)
     write_long_outro(fp, value)
     return jsonify({"ok": True, "long_outro": value})
+
+
+@app.post("/api/long-outro-duration")
+def api_set_long_outro_duration():
+    data = request.get_json(force=True)
+    playlist = data.get("playlist", "")
+    item_id = data.get("id", "")
+    try:
+        seconds = float(data.get("seconds"))
+    except (TypeError, ValueError):
+        abort(400, "Invalid long-outro duration")
+    if not math.isfinite(seconds) or seconds < 1 or seconds > 120:
+        abort(400, "Long-outro duration must be between 1 and 120 seconds")
+    fp = playlist_path(playlist) / item_id
+    if not fp.exists() or not is_song(item_id):
+        abort(404)
+    write_long_outro_seconds(fp, seconds)
+    return jsonify({"ok": True, "long_outro_seconds": seconds})
 
 
 @app.post("/api/bpm-outro")

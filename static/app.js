@@ -454,6 +454,11 @@ function updateControlsRow() {
   if (loBtn) loBtn.classList.toggle("active", !!it.long_outro);
   if (boBtn) boBtn.classList.toggle("active", !!it.bpm_outro);
 
+  const longOutroInput = $("long-outro-seconds");
+  if (longOutroInput && document.activeElement !== longOutroInput) {
+    longOutroInput.value = String(it.long_outro_seconds || 6);
+  }
+
   // BPM input — manual BPM in value field, detected BPM as placeholder only
   const bpmInput = $("bpm-input");
   if (bpmInput && document.activeElement !== bpmInput) {
@@ -545,7 +550,9 @@ function startTransition(nextItem) {
   const currentItem   = state.playing ? state.playing.item : null;
   const hasLongOutro  = !!(currentItem && currentItem.long_outro);
   const hasQuickIntro = !!nextItem.quick_intro;
-  const EXTRA = hasLongOutro ? 6.0 : 0;
+  const EXTRA = hasLongOutro
+    ? Math.max(1, Math.min(120, Number(currentItem.long_outro_seconds) || 6))
+    : 0;
 
   // BPM outro: compute target playback-rate ratio for Track A.
   // When bpm_outro is on, A's speed ramps to match B's tempo so the beats
@@ -673,8 +680,7 @@ function startTransition(nextItem) {
   na.onerror = () => { na.style.display = "none"; };
   $("next-preview").style.display = "";
 
-  const _currentItem    = state.playing ? state.playing.item : null;
-  const _longOutroExtra = (_currentItem && _currentItem.long_outro) ? 6.0 : 0;
+  const _longOutroExtra = EXTRA;
   const tMs = nextItem.quick_intro
     ? (Math.min(T, 4.0) + _longOutroExtra) * 1000
     : (T + _longOutroExtra) * 1000;
@@ -2203,6 +2209,42 @@ $("bpm-outro-btn").addEventListener("click", async () => {
     toast("Failed to save.");
   }
 });
+
+/* ---------------------------------------------- long-outro duration field */
+async function saveLongOutroSeconds() {
+  if (!state.playing) return;
+  const it = state.playing.item;
+  const input = $("long-outro-seconds");
+  const seconds = parseFloat(input.value);
+  if (!Number.isFinite(seconds) || seconds < 1 || seconds > 120) {
+    input.value = String(it.long_outro_seconds || 6);
+    toast("Enter a duration from 1 to 120 seconds");
+    return;
+  }
+
+  const previous = it.long_outro_seconds || 6;
+  it.long_outro_seconds = seconds;
+  try {
+    await api("POST", "/api/long-outro-duration", {
+      playlist: it.playlist,
+      id: it.id,
+      seconds,
+    });
+    toast(`Long outro set to ${seconds} seconds`);
+  } catch (_) {
+    it.long_outro_seconds = previous;
+    input.value = String(previous);
+    toast("Failed to save long-outro duration.");
+  }
+}
+
+$("long-outro-seconds").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    e.target.blur();
+  }
+});
+$("long-outro-seconds").addEventListener("change", saveLongOutroSeconds);
 
 /* --------------------------------------------------- BPM input field */
 $("bpm-input").addEventListener("keydown", async (e) => {
