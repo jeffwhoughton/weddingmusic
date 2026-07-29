@@ -18,6 +18,7 @@ const state = {
   songs: [],
   current: null,
   currentIndex: -1,
+  started: false,
   urls: new Set(),
   locked: false,
   fading: false,
@@ -496,16 +497,28 @@ function updateScrollPip() {
 }
 
 async function preloadArtwork(group) {
-  await Promise.all(group.songs.map(async (item) => {
+  for (const item of group.songs) {
     try {
       await ensureBlob(item);
       const tags = await loadTags(item);
       const pictureTag = tags?.picture || tags?.APIC || tags?.covr;
       if (pictureTag?.data?.length) item.artBlob = new Blob([new Uint8Array(pictureTag.data)], { type: pictureTag.format || pictureTag.mime || "image/jpeg" });
       ensureArtUrl(item);
+      if (state.selectedGroup === group) {
+        renderSetlist();
+        if (state.current === item) setImage($("player-art"), ensureArtUrl(item));
+      }
     } catch (_) {}
-  }));
-  if (state.selectedGroup === group) renderSetlist();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+async function selectInitialSong(item) {
+  if (!item) return;
+  try {
+    await loadItemMetadata(item);
+    if (state.current === item) updatePlayer();
+  } catch (_) {}
 }
 
 function updatePlayer() {
@@ -527,12 +540,18 @@ function updatePlayButton() {
   const button = $("play-button");
   const playing = state.current && !audioA.paused;
   button.textContent = playing ? "⏸" : "▶";
+  button.classList.toggle("is-fading", state.fading);
   button.setAttribute("aria-label", playing ? "Fade to pause" : "Play next track");
 }
 
 function updateNextTrackLabel() {
-  const next = getNextSong();
-  $("next-track-label").textContent = `Will Play ${next?.name || "the first track"}`;
+  const next = state.started ? getNextSong() : state.current;
+  const playing = state.fading || (state.current && !audioA.paused);
+  const label = $("next-track-label");
+  const resume = $("resume-button");
+  label.textContent = `Will Play ${next?.name || "the first track"}`;
+  label.hidden = Boolean(playing);
+  resume.hidden = Boolean(playing || !state.started);
 }
 
 function updateMarkers() {
@@ -571,13 +590,15 @@ async function selectGroup(id) {
   releaseItemResources(previous);
   state.selectedGroup = group;
   state.songs = group.songs;
-  state.current = null;
-  state.currentIndex = -1;
+  state.current = group.songs[0] || null;
+  state.currentIndex = state.current ? 0 : -1;
+  state.started = false;
   $("playlist-picker").hidden = true;
   $("player-view").hidden = false;
   renderDrawer();
   renderSetlist();
   updatePlayer();
+  selectInitialSong(state.current);
   preloadArtwork(group);
 }
 
@@ -586,6 +607,7 @@ async function playSong(item, shouldPlay) {
   const previous = state.current;
   abortTransition();
   state.fading = false;
+  state.started = true;
   state.current = item;
   state.currentIndex = state.songs.indexOf(item);
   await loadItemMetadata(item);
@@ -709,6 +731,7 @@ function fadeToPause() {
     graph.setValueAtTime(1, currentTime);
     state.fading = false;
     updatePlayButton();
+    updateNextTrackLabel();
   }, 5000);
   updatePlayButton();
 }
@@ -755,7 +778,13 @@ function attachAudioListeners() {
 function handleTransport() {
   if (state.fading) return;
   if (state.current && !audioA.paused) fadeToPause();
+  else if (state.current && !state.started) playSong(state.current, true);
   else playNextTrack();
+}
+
+function resumePlayback() {
+  if (!state.current || state.fading) return;
+  audioA.play().catch(() => toast("Tap play to start audio."));
 }
 
 function onScrubClick(event) {
@@ -820,6 +849,7 @@ $("menu-button").addEventListener("click", () => setDrawer(true));
 $("menu-close").addEventListener("click", closeDrawer);
 $("drawer-backdrop").addEventListener("click", closeDrawer);
 $('play-button').addEventListener("click", handleTransport);
+$("resume-button").addEventListener("click", resumePlayback);
 $("scrub-track").addEventListener("click", onScrubClick);
 $("setlist").addEventListener("scroll", updateScrollPip, { passive: true });
 $("lock-button").addEventListener("click", () => {
