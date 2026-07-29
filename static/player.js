@@ -556,6 +556,17 @@ function renderSetlist() {
   updateScrollPip();
 }
 
+function scrollToCurrentSong() {
+  const list = $("setlist");
+  const row = state.current && list.querySelector(`.song-row[data-song="${state.current.globalIndex}"]`);
+  if (!row) return;
+  const listBounds = list.getBoundingClientRect();
+  const rowBounds = row.getBoundingClientRect();
+  if (rowBounds.top < listBounds.top || rowBounds.bottom > listBounds.bottom) {
+    row.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
 function updateScrollPip() {
   const list = $("setlist");
   const pip = $("scroll-pip");
@@ -652,7 +663,8 @@ function updatePlayButton() {
   const button = $("play-button");
   const wrapper = $("play-button-wrap");
   const playing = state.current && !audioA.paused;
-  button.textContent = playing ? "⏸" : "▶";
+  button.textContent = "";
+  button.classList.toggle("is-playing", Boolean(playing));
   wrapper.classList.toggle("is-fading", state.fading);
   if (!state.fading) wrapper.style.removeProperty("--fade-progress");
   button.setAttribute("aria-label", playing ? "Fade to pause" : "Play next track");
@@ -937,6 +949,8 @@ function completeTransition(next) {
   loadItemMetadata(next).then(() => analyzeWaveform(next)).catch(() => {});
   renderSetlist();
   updatePlayer();
+  onAudioTimeUpdate();
+  scrollToCurrentSong();
 }
 
 function fadeToPause() {
