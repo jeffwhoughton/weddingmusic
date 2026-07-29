@@ -61,8 +61,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .player-art { width: 100%; height: 100%; display: block; border-radius: 16px; object-fit: cover; background: linear-gradient(135deg, #76523b, #30221a 70%); box-shadow: 0 20px 50px -20px #000; }
 .player-art.placeholder { display: grid; place-items: center; color: var(--gold-light); font-size: 50px; }
 .player-art.placeholder::after { content: "♪"; }
-.player-title { display: -webkit-box; max-width: 100%; overflow: hidden; font: 600 clamp(20px, 5.5vw, 26px)/1.15 Fraunces, serif; text-overflow: ellipsis; line-clamp: 2; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.player-artist { display: -webkit-box; margin-top: 4px; overflow: hidden; color: var(--cream-dim); font-size: 14px; line-height: 1.35; text-overflow: ellipsis; line-clamp: 2; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.player-title { display: -webkit-box; min-height: 2.3em; max-width: 100%; overflow: hidden; font: 600 clamp(20px, 5.5vw, 26px)/1.15 Fraunces, serif; text-overflow: ellipsis; line-clamp: 2; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.player-artist { display: -webkit-box; min-height: 2.7em; margin-top: 4px; overflow: hidden; color: var(--cream-dim); font-size: 14px; line-height: 1.35; text-overflow: ellipsis; line-clamp: 2; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .scrub { margin-top: 19px; }
 .scrub-track { position: relative; height: 46px; overflow: visible; border-radius: 6px; background: rgba(56,41,31,.8); cursor: pointer; outline: 0; user-select: none; -webkit-tap-highlight-color: transparent; }
 .scrub-track:focus, .scrub-track:active { outline: 0; }
@@ -77,9 +77,9 @@ button { -webkit-tap-highlight-color: transparent; }
 .play-button-wrap.is-fading { background: conic-gradient(var(--rose) var(--fade-progress), rgba(224,111,125,.16) 0); }
 .play-button { position: relative; display: grid; place-items: center; width: 54px; height: 54px; border: 0; border-radius: 50%; color: #2a1c08; background: linear-gradient(180deg, var(--gold-light), var(--gold)); box-shadow: 0 10px 24px -8px rgba(224,166,78,.7); cursor: pointer; }
 .play-button::before { width: 0; height: 0; margin-left: 3px; border-top: 9px solid transparent; border-bottom: 9px solid transparent; border-left: 13px solid currentColor; content: ""; }
-.play-button.is-playing::before, .play-button.is-playing::after { width: 5px; height: 18px; border-radius: 1px; background: currentColor; content: ""; }
-.play-button.is-playing::before { position: absolute; margin-left: -7px; }
-.play-button.is-playing::after { position: absolute; margin-left: 7px; }
+.play-button.is-playing::before, .play-button.is-playing::after { width: 4px; height: 16px; border-radius: 1px; background: #000; content: ""; }
+.play-button.is-playing::before { position: absolute; margin-left: -6px; }
+.play-button.is-playing::after { position: absolute; margin-left: 6px; }
 .play-button:active { transform: scale(.95); }
 .transport-info { position: absolute; left: calc(50% + 46px); display: flex; flex-direction: column; align-items: flex-start; max-width: min(42vw, 190px); }
 .resume-button { margin-top: 3px; padding: 0; border: 0; color: var(--gold); background: transparent; cursor: pointer; font-size: 9px; line-height: 1.2; }

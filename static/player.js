@@ -769,6 +769,8 @@ async function playSong(item, shouldPlay, respectInPoint = true) {
     }
   });
   if (state.current === item && respectInPoint) await seekToInPoint(audioA, item);
+  else if (state.current === item) audioA.currentTime = 0;
+  onAudioTimeUpdate();
   if (shouldPlay) audioA.play().catch(() => toast("Tap play to start audio."));
   if (previous && previous !== item) releaseItemResources(previous);
   renderSetlist();
