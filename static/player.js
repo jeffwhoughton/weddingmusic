@@ -314,10 +314,15 @@ function numberFromTag(tags, key) {
     if (normalizedName === wanted || normalizedName.endsWith(`:${wanted}`)) candidates.push(tagValue);
   }
   const found = candidates.find((tag) => {
-    const description = tag?.user_description || tag?.description || tag?.desc || tag?.name || "";
+    const payload = tag?.data && typeof tag.data === "object" && !Array.isArray(tag.data) ? tag.data : tag;
+    const description = payload?.user_description || payload?.description || payload?.desc || payload?.name || "";
     return String(description).toUpperCase() === wanted;
-  }) || candidates.find((tag) => !tag?.user_description && !tag?.description && !tag?.desc && !tag?.name);
-  const rawValue = found?.value ?? found?.text ?? found?.data ?? found;
+  }) || candidates.find((tag) => {
+    const payload = tag?.data && typeof tag.data === "object" && !Array.isArray(tag.data) ? tag.data : tag;
+    return !payload?.user_description && !payload?.description && !payload?.desc && !payload?.name;
+  });
+  const payload = found?.data && typeof found.data === "object" && !Array.isArray(found.data) ? found.data : found;
+  const rawValue = payload?.value ?? payload?.text ?? payload?.data ?? payload;
   const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
   const decoded = value instanceof Uint8Array
     ? new TextDecoder().decode(value)
