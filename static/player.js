@@ -307,10 +307,22 @@ function numberFromTag(tags, key) {
   const wanted = key.toUpperCase();
   const candidates = [];
   if (Array.isArray(tags?.userDefinedText)) candidates.push(...tags.userDefinedText);
-  if (tags?.TXXX) candidates.push(tags.TXXX);
-  const found = candidates.find((tag) => String(tag.description || "").toUpperCase() === wanted);
-  const value = found?.value ?? found?.text?.[0];
-  const result = Number(Array.isArray(value) ? value[0] : value);
+  if (Array.isArray(tags?.TXXX)) candidates.push(...tags.TXXX);
+  else if (tags?.TXXX) candidates.push(tags.TXXX);
+  for (const [tagName, tagValue] of Object.entries(tags || {})) {
+    const normalizedName = tagName.toUpperCase();
+    if (normalizedName === wanted || normalizedName.endsWith(`:${wanted}`)) candidates.push(tagValue);
+  }
+  const found = candidates.find((tag) => {
+    const description = tag?.user_description || tag?.description || tag?.desc || tag?.name || "";
+    return String(description).toUpperCase() === wanted;
+  }) || candidates.find((tag) => !tag?.user_description && !tag?.description && !tag?.desc && !tag?.name);
+  const rawValue = found?.value ?? found?.text ?? found?.data ?? found;
+  const value = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+  const decoded = value instanceof Uint8Array
+    ? new TextDecoder().decode(value)
+    : value instanceof ArrayBuffer ? new TextDecoder().decode(new Uint8Array(value)) : value;
+  const result = Number(String(decoded).trim());
   return Number.isFinite(result) ? result : null;
 }
 
@@ -516,6 +528,8 @@ function renderDrawer() {
 function renderSetlist() {
   const group = state.selectedGroup;
   if (!group) return;
+  const list = $("setlist");
+  const scrollTop = list.scrollTop;
   const html = [];
   for (const section of group.sections) {
     html.push(`<div class="set-section">${esc(section.name)}</div>`);
@@ -529,15 +543,9 @@ function renderSetlist() {
       html.push(`<button class="song-row${current}" data-song="${item.globalIndex}"><span class="song-number">${esc(item.position)}</span><img class="song-art"${art ? ` src="${art}"` : ""} alt=""><span class="song-meta"><span class="song-name">${esc(item.name)}</span><span class="song-artist">${esc(item.artist)}</span></span><span class="song-duration">${item.duration ? fmt(item.duration) : ""}</span></button>`);
     }
   }
-  $("setlist").innerHTML = html.join("");
-  $("setlist").querySelectorAll("[data-song]").forEach((row) => row.addEventListener("click", () => playSong(group.songs[Number(row.dataset.song)], true)));
-  if (state.current) {
-    const currentRow = $("setlist").querySelector(`.song-row[data-song="${state.current.globalIndex}"]`);
-    if (currentRow) {
-      currentRow.scrollIntoView({ block: "center", behavior: "smooth" });
-      requestAnimationFrame(updateScrollPip);
-    }
-  }
+  list.innerHTML = html.join("");
+  list.scrollTop = scrollTop;
+  list.querySelectorAll("[data-song]").forEach((row) => row.addEventListener("click", () => playSong(group.songs[Number(row.dataset.song)], true)));
   updateScrollPip();
 }
 
@@ -606,7 +614,6 @@ function updatePlayer() {
   updateMarkers();
   if (item) {
     drawWaveform(item);
-    setTimeout(() => $("setlist").querySelector(`.song-row[data-song="${item.globalIndex}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 30);
   }
 }
 
@@ -656,7 +663,7 @@ function updateNextTrackLabel() {
 
 function updateMarkers() {
   const item = state.current;
-  const duration = audioA.duration || item?.duration || 0;
+  const duration = item?.duration || audioA.duration || 0;
   const transitionMarker = $("transition-marker");
   const startMarker = $("start-marker");
   if (!item || !duration) {
@@ -672,6 +679,23 @@ function updateMarkers() {
     startMarker.style.display = "block";
     startMarker.style.left = `${Math.max(0, Math.min(100, item.startPoint / duration * 100))}%`;
   } else startMarker.style.display = "none";
+}
+
+function seekToInPoint(audio, item) {
+  if (item.startPoint === null) return Promise.resolve();
+  const target = Math.max(0, Math.min(audio.duration || item.duration || item.startPoint, item.startPoint));
+  if (target === 0) { audio.currentTime = 0; return Promise.resolve(); }
+  return new Promise((resolve) => {
+    let timeout;
+    const finish = () => {
+      clearTimeout(timeout);
+      audio.removeEventListener("seeked", finish);
+      resolve();
+    };
+    audio.addEventListener("seeked", finish, { once: true });
+    timeout = setTimeout(finish, 1500);
+    audio.currentTime = target;
+  });
 }
 
 function setDrawer(open) {
@@ -695,6 +719,7 @@ async function selectGroup(id) {
   state.started = false;
   $("playlist-picker").hidden = true;
   $("player-view").hidden = false;
+  $("setlist").scrollTop = 0;
   renderDrawer();
   renderSetlist();
   updatePlayer();
@@ -716,17 +741,17 @@ async function playSong(item, shouldPlay) {
   audioA.src = ensureUrl(item);
   audioA.load();
   await new Promise((resolve) => {
-    const seekToStart = () => {
-      if (state.current === item && item.startPoint !== null) audioA.currentTime = item.startPoint;
+    const onMetadata = () => {
       if (state.current === item) updateMarkers();
       resolve();
     };
-    if (audioA.readyState >= 1) seekToStart();
+    if (audioA.readyState >= 1) onMetadata();
     else {
-      audioA.addEventListener("loadedmetadata", seekToStart, { once: true });
+      audioA.addEventListener("loadedmetadata", onMetadata, { once: true });
       audioA.addEventListener("error", resolve, { once: true });
     }
   });
+  if (state.current === item) await seekToInPoint(audioA, item);
   if (shouldPlay) audioA.play().catch(() => toast("Tap play to start audio."));
   if (previous && previous !== item) releaseItemResources(previous);
   renderSetlist();
@@ -801,7 +826,8 @@ async function startTransition() {
     audioB.addEventListener("loadedmetadata", resolve, { once: true });
     audioB.addEventListener("error", resolve, { once: true });
   });
-  if (next.startPoint !== null) audioB.currentTime = next.startPoint;
+  await seekToInPoint(audioB, next);
+  if (!transition.active) return;
   audioB.playbackRate = 1;
   await audioB.play().catch(() => {});
   const now = audioContext.currentTime;
