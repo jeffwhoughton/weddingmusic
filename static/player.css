@@ -26,6 +26,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .download-card p, .modal-card p { color: var(--muted); font-size: 14px; line-height: 1.55; }
 .progress-track { height: 5px; margin: 24px 0 16px; overflow: hidden; border-radius: 8px; background: var(--panel-light); }
 .progress-fill { width: 0; height: 100%; background: linear-gradient(90deg, var(--gold), var(--rose)); transition: width .2s; }
+.download-card .wide-button + .wide-button { margin-top: 10px; }
 .wide-button, .drawer-action { border: 1px solid var(--line); border-radius: 10px; color: var(--cream); background: var(--panel); cursor: pointer; padding: 12px 14px; text-align: center; }
 .wide-button { width: 100%; background: linear-gradient(180deg, var(--gold-light), var(--gold)); color: #2a1c08; border: 0; font-weight: 700; }
 .wide-button:active, .drawer-action:active { transform: translateY(1px); }

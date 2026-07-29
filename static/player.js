@@ -1,4 +1,6 @@
-const DRIVE_URL = "https://drive.google.com/uc?export=download&id=19H_bV5SUmExeeLFATTvdJV2lBPrAoaJn";
+const GOOGLE_CLIENT_ID = "465530902895-smsu60b8qvdv83ahrbr7pi7grl5cjh8b.apps.googleusercontent.com";
+const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/19H_bV5SUmExeeLFATTvdJV2lBPrAoaJn?alt=media&acknowledgeAbuse=true";
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
 const LOCK_PASSWORD = "1235";
@@ -27,6 +29,9 @@ let audioContext = null;
 const audioGraphs = new Map();
 const transition = { active: false, timer: null, duration: 5 };
 let toastTimer;
+let driveAccessToken = null;
+let driveTokenExpiresAt = 0;
+let tokenRequest = null;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (seconds) => {
@@ -89,22 +94,73 @@ function setDownloadStatus(message, progress = null) {
   if (progress !== null) $("download-progress").style.width = `${Math.round(progress * 100)}%`;
 }
 
+function requestDriveToken() {
+  if (tokenRequest) return tokenRequest;
+  tokenRequest = new Promise((resolve, reject) => {
+    if (GOOGLE_CLIENT_ID.startsWith("REPLACE_WITH")) {
+      reject(new Error("Add your Google OAuth client ID to player.js first."));
+      return;
+    }
+    if (!window.google?.accounts?.oauth2) {
+      reject(new Error("Google Sign-In did not load. Check your connection and try again."));
+      return;
+    }
+    const client = window.google.accounts.oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: DRIVE_SCOPE,
+      callback: (response) => {
+        if (response.error) {
+          reject(new Error("Google authorization was cancelled or denied."));
+          return;
+        }
+        driveAccessToken = response.access_token;
+        driveTokenExpiresAt = Date.now() + Math.max(60, Number(response.expires_in || 3600) - 60) * 1000;
+        resolve(driveAccessToken);
+      },
+    });
+    client.requestAccessToken({ prompt: driveAccessToken ? "" : "consent" });
+  }).finally(() => { tokenRequest = null; });
+  return tokenRequest;
+}
+
+async function getDriveToken() {
+  if (driveAccessToken && Date.now() < driveTokenExpiresAt) return driveAccessToken;
+  return requestDriveToken();
+}
+
 async function downloadZip() {
-  setDownloadStatus("Contacting Google Drive…", 0);
+  setDownloadStatus("Waiting for Google authorization…", 0);
+  $("google-signin-button").hidden = true;
   $("download-retry").hidden = true;
+  const accessToken = await getDriveToken();
+  setDownloadStatus("Downloading your playlist archive…", 0);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45000);
   let response;
   try {
-    response = await fetch(DRIVE_URL, { cache: "no-store", signal: controller.signal });
+    response = await fetch(DRIVE_URL, {
+      cache: "no-store",
+      signal: controller.signal,
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
   } catch (error) {
     if (error.name === "AbortError") throw new Error("Google Drive did not respond within 45 seconds.");
-    throw new Error("Google Drive blocked the browser download. Host the ZIP on a CORS-enabled file host.");
+    throw new Error("Could not connect to the Google Drive API.");
   } finally {
     clearTimeout(timeout);
   }
   if (!response.ok) {
-    throw new Error(`Google Drive returned HTTP ${response.status}. Check that the file is publicly downloadable.`);
+    if (response.status === 401) {
+      driveAccessToken = null;
+      driveTokenExpiresAt = 0;
+      throw new Error("Google authorization expired. Sign in again.");
+    }
+    let message = `Google Drive returned HTTP ${response.status}.`;
+    try {
+      const details = await response.json();
+      message = details.error?.message || message;
+    } catch (_) {}
+    throw new Error(message);
   }
 
   if (!response.body) {
@@ -128,7 +184,7 @@ async function downloadZip() {
   return new Blob(chunks, { type: response.headers.get("content-type") || "application/zip" });
 }
 
-async function getZipBlob() {
+async function getZipBlob(allowDownload = false) {
   const cached = await readCachedZip();
   if (cached?.blob) {
     try {
@@ -139,6 +195,11 @@ async function getZipBlob() {
     } catch (_) {
       await removeCachedZip();
     }
+  }
+  if (!allowDownload) {
+    const error = new Error("Sign in with Google to download the playlist archive.");
+    error.code = "AUTH_REQUIRED";
+    throw error;
   }
   const downloaded = await downloadZip();
   await JSZip.loadAsync(downloaded);
@@ -714,24 +775,28 @@ async function clearCache() {
   await removeCachedZip();
   $("app-shell").hidden = true;
   $("download-screen").style.display = "grid";
-  await bootstrap();
+  await bootstrap(true);
 }
 
-async function bootstrap() {
+async function bootstrap(allowDownload = false) {
   try {
-    const blob = await getZipBlob();
+    const blob = await getZipBlob(allowDownload);
     setDownloadStatus("Preparing the sets…", .98);
     state.groups = await extractPlaylists(blob);
     const missing = state.groups.filter((group) => !group.songs.length);
     if (missing.length) throw new Error(`The archive is missing ${missing[0].name}.`);
     renderPicker();
     renderDrawer();
+    $("google-signin-button").hidden = true;
+    $("download-retry").hidden = true;
     $("download-screen").style.display = "none";
     $("app-shell").hidden = false;
   } catch (error) {
     setDownloadStatus(error.message || "Could not load the playlist archive.");
     $("download-progress").style.width = "0";
-    $("download-retry").hidden = false;
+    const needsAuth = error.code === "AUTH_REQUIRED";
+    $("google-signin-button").hidden = !needsAuth;
+    $("download-retry").hidden = needsAuth;
   }
 }
 
@@ -755,7 +820,8 @@ $("lock-close").addEventListener("click", () => { $("lock-modal").hidden = true;
 $("clear-cache-button").addEventListener("click", () => { $("confirm-modal").hidden = false; });
 $("confirm-cancel").addEventListener("click", () => { $("confirm-modal").hidden = true; });
 $("confirm-clear").addEventListener("click", clearCache);
-$("download-retry").addEventListener("click", bootstrap);
+$("google-signin-button").addEventListener("click", () => bootstrap(true));
+$("download-retry").addEventListener("click", () => bootstrap(true));
 
 document.addEventListener("click", (event) => {
   if (!state.locked || event.target.closest("[data-lock-allowed]") || event.target.closest("#lock-modal")) return;
