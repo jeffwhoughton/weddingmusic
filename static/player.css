@@ -67,21 +67,25 @@ button { -webkit-tap-highlight-color: transparent; }
 .transition-marker { display: none; background: var(--purple); box-shadow: 0 0 8px rgba(164,123,255,.9); }
 .scrub-times { display: flex; justify-content: space-between; margin-top: 7px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .transport { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 13px; }
+.play-button-wrap { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; background: transparent; }
+.play-button-wrap.is-fading { background: conic-gradient(var(--rose) var(--fade-progress), rgba(224,111,125,.16) 0); }
 .play-button { width: 54px; height: 54px; border: 0; border-radius: 50%; color: #2a1c08; background: linear-gradient(180deg, var(--gold-light), var(--gold)); box-shadow: 0 10px 24px -8px rgba(224,166,78,.7); cursor: pointer; font-size: 21px; }
 .play-button:active { transform: scale(.95); }
 .transport-info { display: flex; flex-direction: column; align-items: flex-start; max-width: min(42vw, 190px); }
 .next-track-label { overflow: hidden; color: var(--cream-dim); font-size: 11px; line-height: 1.3; text-align: left; text-overflow: ellipsis; }
 .resume-button { margin-top: 3px; padding: 0; border: 0; color: var(--gold); background: transparent; cursor: pointer; font-size: 9px; line-height: 1.2; }
 .resume-button:hover { color: var(--gold-light); }
-.play-button.is-fading { animation: fade-spin 1s linear infinite; }
-@keyframes fade-spin { to { transform: rotate(360deg); } }
+@property --fade-progress { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
+@keyframes fade-ring { from { --fade-progress: 0deg; } to { --fade-progress: 360deg; } }
+.play-button-wrap.is-fading { animation: fade-ring 5s linear forwards; }
 
 .setlist-pane { position: relative; flex: 1 1 47%; min-height: 0; border-top: 1px solid var(--line); }
-.setlist { position: relative; width: min(100%, 570px); height: 100%; margin: 0 auto; overflow-x: hidden; overflow-y: scroll; padding: 0 18px 30px 12px; overscroll-behavior: contain; scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+.setlist { position: relative; width: min(100%, 570px); height: 100%; margin: 0 auto; overflow-x: hidden; overflow-y: scroll; padding: 0 18px 30px 0; overscroll-behavior: contain; scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
 .setlist::-webkit-scrollbar { width: 9px; }
 .setlist::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 5px; background: var(--line); background-clip: padding-box; cursor: grab; }
 .scroll-pip-track { position: absolute; top: 8px; right: 3px; bottom: 8px; width: 3px; border-radius: 3px; background: rgba(231,205,168,.08); pointer-events: none; }
 .scroll-pip { position: absolute; top: 0; left: -2px; width: 7px; height: 34px; border-radius: 5px; background: var(--gold); box-shadow: 0 0 8px rgba(224,166,78,.65); transform: translateY(0); }
+.current-song-pip { position: absolute; top: 0; left: -2px; width: 7px; height: 5px; border-radius: 5px; background: var(--rose); box-shadow: 0 0 7px rgba(224,111,125,.8); }
 .set-section { display: flex; align-items: center; gap: 8px; margin: 13px 8px 5px; color: var(--gold); font: italic 12px Fraunces, serif; letter-spacing: .1em; text-transform: uppercase; }
 .set-section::before, .set-section::after { height: 1px; flex: 1; background: var(--line); content: ''; }
 .set-divider { display: flex; align-items: center; gap: 8px; margin: 11px 10px 5px; color: var(--gold-light); font: italic 11px Fraunces, serif; letter-spacing: .08em; text-transform: uppercase; }

@@ -420,7 +420,8 @@ async function analyzeWaveform(item) {
 }
 
 function setImage(image, url) {
-  image.style.backgroundImage = url ? `url("${url}")` : "";
+  if (url) image.src = url;
+  else image.removeAttribute("src");
   image.classList.toggle("placeholder", !url);
 }
 
@@ -481,7 +482,10 @@ function renderSetlist() {
   $("setlist").querySelectorAll("[data-song]").forEach((row) => row.addEventListener("click", () => playSong(group.songs[Number(row.dataset.song)], true)));
   if (state.current) {
     const currentRow = $("setlist").querySelector(`.song-row[data-song="${state.current.globalIndex}"]`);
-    if (currentRow) currentRow.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (currentRow) {
+      currentRow.scrollIntoView({ block: "center", behavior: "smooth" });
+      requestAnimationFrame(updateScrollPip);
+    }
   }
   updateScrollPip();
 }
@@ -489,11 +493,18 @@ function renderSetlist() {
 function updateScrollPip() {
   const list = $("setlist");
   const pip = $("scroll-pip");
-  if (!list || !pip) return;
+  const currentPip = $("current-song-pip");
+  if (!list || !pip || !currentPip) return;
   const range = list.scrollHeight - list.clientHeight;
   const trackRange = Math.max(0, list.clientHeight - 16 - pip.offsetHeight);
   pip.style.transform = `translateY(${range > 0 ? list.scrollTop / range * trackRange : 0}px)`;
   pip.style.opacity = range > 0 ? "1" : "0";
+  const currentRow = state.current && list.querySelector(`.song-row[data-song="${state.current.globalIndex}"]`);
+  const contentRange = Math.max(1, list.scrollHeight - list.clientHeight);
+  const currentPosition = currentRow ? currentRow.offsetTop / contentRange : 0;
+  const currentTrackRange = Math.max(0, list.clientHeight - 16 - currentPip.offsetHeight);
+  currentPip.style.transform = `translateY(${Math.max(0, Math.min(1, currentPosition)) * currentTrackRange}px)`;
+  currentPip.style.opacity = currentRow ? "1" : "0";
 }
 
 async function preloadArtwork(group) {
@@ -538,9 +549,11 @@ function updatePlayer() {
 
 function updatePlayButton() {
   const button = $("play-button");
+  const wrapper = $("play-button-wrap");
   const playing = state.current && !audioA.paused;
   button.textContent = playing ? "⏸" : "▶";
-  button.classList.toggle("is-fading", state.fading);
+  wrapper.classList.toggle("is-fading", state.fading);
+  if (!state.fading) wrapper.style.removeProperty("--fade-progress");
   button.setAttribute("aria-label", playing ? "Fade to pause" : "Play next track");
 }
 
@@ -874,6 +887,7 @@ document.addEventListener("click", (event) => {
 
 window.addEventListener("resize", () => {
   if (state.current) { drawWaveform(state.current); updateMarkers(); }
+  updateScrollPip();
 });
 
 attachAudioListeners();

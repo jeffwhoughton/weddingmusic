@@ -40,7 +40,7 @@
 
     <section class="player-view" id="player-view" hidden>
       <section class="player-pane" id="player-pane">
-        <div class="player-art-wrap"><div class="player-art placeholder" id="player-art" role="img" aria-label="Album art"></div></div>
+        <div class="player-art-wrap"><img class="player-art placeholder" id="player-art" src="" alt="Album art"></div>
         <div class="player-title" id="player-title"></div>
         <div class="player-artist" id="player-artist"></div>
 
@@ -55,17 +55,22 @@
         </div>
 
         <div class="transport">
-          <button class="play-button" id="play-button" aria-label="Play next track">▶</button>
+          <div class="play-button-wrap" id="play-button-wrap">
+            <button class="play-button" id="play-button" aria-label="Play next track">▶</button>
+          </div>
           <div class="transport-info">
             <span class="next-track-label" id="next-track-label"></span>
-            <button class="resume-button" id="resume-button" aria-label="Resume play">↻ Resume Play</button>
+            <button class="resume-button" id="resume-button" aria-label="Resume current song">▶ Resume Current Song</button>
           </div>
         </div>
       </section>
 
       <section class="setlist-pane" id="setlist-pane">
         <div class="setlist" id="setlist"></div>
-        <div class="scroll-pip-track" aria-hidden="true"><div class="scroll-pip" id="scroll-pip"></div></div>
+        <div class="scroll-pip-track" aria-hidden="true">
+          <div class="current-song-pip" id="current-song-pip"></div>
+          <div class="scroll-pip" id="scroll-pip"></div>
+        </div>
       </section>
     </section>
   </main>
