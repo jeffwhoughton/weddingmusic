@@ -440,10 +440,16 @@ function drawWaveform(item) {
   const data = item.waveform.data;
   const bars = Math.max(1, Math.floor(canvas.width / (3 * ratio)));
   const barWidth = canvas.width / bars;
-  context.fillStyle = "rgba(240, 215, 145, .58)";
+  const duration = item.duration || 0;
+  const inPoint = item.startPoint === null ? 0 : Math.max(0, item.startPoint);
+  const outPoint = item.transitionPoint === null ? duration : Math.max(inPoint, Math.min(duration, item.transitionPoint));
   for (let index = 0; index < bars; index++) {
     const value = data[Math.min(data.length - 1, Math.floor(index / bars * data.length))] || 0;
     const barHeight = Math.max(ratio, value * canvas.height * .86);
+    const time = (index + .5) / bars * duration;
+    context.fillStyle = time < inPoint || time > outPoint
+      ? "rgba(240, 215, 145, .22)"
+      : "rgba(240, 215, 145, .58)";
     context.fillRect(index * barWidth, (canvas.height - barHeight) / 2, Math.max(ratio, barWidth - ratio), barHeight);
   }
 }
@@ -528,6 +534,7 @@ async function selectInitialSong(item) {
   if (!item) return;
   try {
     await loadItemMetadata(item);
+    await analyzeWaveform(item);
     if (state.current === item) updatePlayer();
   } catch (_) {}
 }
@@ -538,12 +545,37 @@ function updatePlayer() {
   $("player-title").textContent = item?.name || "Ready when you are";
   $("player-artist").textContent = item?.artist || "Select a song below to begin";
   setImage($("player-art"), item ? ensureArtUrl(item) : "");
+  updateMediaSession();
   updatePlayButton();
   updateNextTrackLabel();
   updateMarkers();
   if (item) {
     drawWaveform(item);
     setTimeout(() => $("setlist").querySelector(`.song-row[data-song="${item.globalIndex}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }), 30);
+  }
+}
+
+function updateMediaSession() {
+  if (!navigator.mediaSession) return;
+  const item = state.current;
+  navigator.mediaSession.metadata = item ? new MediaMetadata({
+    title: item.name,
+    artist: item.artist,
+    album: state.selectedGroup?.name || "Playlist Studio",
+    artwork: ensureArtUrl(item) ? [{ src: ensureArtUrl(item) }] : [],
+  }) : null;
+  navigator.mediaSession.playbackState = audioA.paused ? "paused" : "playing";
+}
+
+function updateMediaPosition() {
+  if (!navigator.mediaSession?.setPositionState) return;
+  const duration = audioA.duration || state.current?.duration || 0;
+  if (duration > 0 && Number.isFinite(duration)) {
+    navigator.mediaSession.setPositionState({
+      duration,
+      playbackRate: audioA.playbackRate || 1,
+      position: Math.min(audioA.currentTime || 0, duration),
+    });
   }
 }
 
@@ -580,11 +612,11 @@ function updateMarkers() {
   if (item.transitionPoint !== null) {
     transitionMarker.style.display = "block";
     transitionMarker.style.left = `${Math.max(0, Math.min(100, item.transitionPoint / duration * 100))}%`;
-  }
+  } else transitionMarker.style.display = "none";
   if (item.startPoint !== null) {
     startMarker.style.display = "block";
     startMarker.style.left = `${Math.max(0, Math.min(100, item.startPoint / duration * 100))}%`;
-  }
+  } else startMarker.style.display = "none";
 }
 
 function setDrawer(open) {
@@ -628,11 +660,18 @@ async function playSong(item, shouldPlay) {
   audioA.pause(); audioB.pause();
   audioA.src = ensureUrl(item);
   audioA.load();
-  audioA.addEventListener("loadedmetadata", () => {
-    if (state.current !== item) return;
-    if (item.startPoint !== null) audioA.currentTime = item.startPoint;
-    updateMarkers();
-  }, { once: true });
+  await new Promise((resolve) => {
+    const seekToStart = () => {
+      if (state.current === item && item.startPoint !== null) audioA.currentTime = item.startPoint;
+      if (state.current === item) updateMarkers();
+      resolve();
+    };
+    if (audioA.readyState >= 1) seekToStart();
+    else {
+      audioA.addEventListener("loadedmetadata", seekToStart, { once: true });
+      audioA.addEventListener("error", resolve, { once: true });
+    }
+  });
   if (shouldPlay) audioA.play().catch(() => toast("Tap play to start audio."));
   if (previous && previous !== item) releaseItemResources(previous);
   renderSetlist();
@@ -759,8 +798,8 @@ function playNextTrack() {
   else toast("You are at the end of this set.");
 }
 
-function onAudioPlay() { updatePlayButton(); updateNextTrackLabel(); }
-function onAudioPause() { updatePlayButton(); updateNextTrackLabel(); }
+function onAudioPlay() { updatePlayButton(); updateNextTrackLabel(); updateMediaSession(); }
+function onAudioPause() { updatePlayButton(); updateNextTrackLabel(); updateMediaSession(); }
 function onAudioEnded() {
   if (transition.active) return;
   const next = getNextSong();
@@ -771,6 +810,7 @@ function onAudioTimeUpdate() {
   $("scrub-fill").style.width = duration ? `${audioA.currentTime / duration * 100}%` : "0";
   $("time-current").textContent = fmt(audioA.currentTime);
   $("time-duration").textContent = fmt(duration);
+  updateMediaPosition();
   updateMarkers();
   if (!transition.active && audioA.paused === false && state.current && duration && state.current.transitionPoint !== null && audioA.currentTime >= state.current.transitionPoint) startTransition();
 }
@@ -812,11 +852,33 @@ function showLockPrompt() {
   $("lock-modal").hidden = false;
   setTimeout(() => $("lock-password").focus(), 40);
 }
+
+function enterFullscreen() {
+  if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  }
+}
+
+function exitFullscreen() {
+  if (document.fullscreenElement && document.exitFullscreen) {
+    document.exitFullscreen().catch(() => {});
+  }
+}
+
+function shakeLockButton() {
+  const button = $("lock-button");
+  button.classList.remove("shake");
+  void button.offsetWidth;
+  button.classList.add("shake");
+  setTimeout(() => button.classList.remove("shake"), 350);
+}
+
 function unlock() {
   if ($("lock-password").value === LOCK_PASSWORD) {
     state.locked = false;
     $("lock-modal").hidden = true;
     $("lock-button").textContent = "🔒";
+    exitFullscreen();
   } else {
     $("lock-status").textContent = "Incorrect password.";
     $("lock-password").value = "";
@@ -867,10 +929,17 @@ $("scrub-track").addEventListener("click", onScrubClick);
 $("setlist").addEventListener("scroll", updateScrollPip, { passive: true });
 $("lock-button").addEventListener("click", () => {
   if (state.locked) showLockPrompt();
-  else { state.locked = true; $("lock-button").textContent = "🔓"; }
+  else {
+    state.locked = true;
+    $("lock-button").textContent = "🔓";
+    enterFullscreen();
+  }
 });
 $("lock-submit").addEventListener("click", unlock);
 $("lock-password").addEventListener("keydown", (event) => { if (event.key === "Enter") unlock(); });
+$("lock-password").addEventListener("input", () => {
+  if ($("lock-password").value === LOCK_PASSWORD) unlock();
+});
 $("lock-close").addEventListener("click", () => { $("lock-modal").hidden = true; });
 $("clear-cache-button").addEventListener("click", () => { $("confirm-modal").hidden = false; });
 $("confirm-cancel").addEventListener("click", () => { $("confirm-modal").hidden = true; });
@@ -882,7 +951,7 @@ document.addEventListener("click", (event) => {
   if (!state.locked || event.target.closest("[data-lock-allowed]") || event.target.closest("#lock-modal")) return;
   event.preventDefault();
   event.stopImmediatePropagation();
-  showLockPrompt();
+  shakeLockButton();
 }, true);
 
 window.addEventListener("resize", () => {
@@ -891,4 +960,17 @@ window.addEventListener("resize", () => {
 });
 
 attachAudioListeners();
+if (navigator.mediaSession) {
+  const setMediaAction = (action, handler) => {
+    try { navigator.mediaSession.setActionHandler(action, handler); } catch (_) {}
+  };
+  setMediaAction("play", resumePlayback);
+  setMediaAction("pause", () => {
+    if (!audioA.paused) fadeToPause();
+  });
+  setMediaAction("seekbackward", () => { audioA.currentTime = Math.max(0, audioA.currentTime - 10); });
+  setMediaAction("seekforward", () => { audioA.currentTime = Math.min(audioA.duration || Infinity, audioA.currentTime + 10); });
+  setMediaAction("nexttrack", playNextTrack);
+}
+navigator.serviceWorker?.register("service-worker.js", { scope: "./" }).catch(() => {});
 bootstrap();

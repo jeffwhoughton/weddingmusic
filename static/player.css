@@ -37,6 +37,12 @@ button { -webkit-tap-highlight-color: transparent; }
 .header-playlist { margin-top: 3px; overflow: hidden; color: var(--cream); font: 500 16px Fraunces, serif; text-overflow: ellipsis; white-space: nowrap; }
 .icon-button { width: 38px; height: 38px; padding: 0; border: 1px solid var(--line); border-radius: 10px; color: var(--cream-dim); background: transparent; cursor: pointer; font-size: 24px; line-height: 1; }
 .icon-button:active { background: var(--panel); }
+.lock-button.shake { animation: lock-shake .34s ease-in-out; }
+@keyframes lock-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  75% { transform: translateX(5px); }
+}
 .lock-button { justify-self: end; font-size: 16px; }
 .hamburger { display: grid; gap: 4px; width: 17px; margin: auto; }
 .hamburger i { display: block; height: 1.5px; background: currentColor; }

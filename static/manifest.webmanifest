@@ -1,0 +1,19 @@
+{
+  "name": "Playlist Studio Player",
+  "short_name": "Playlist Player",
+  "id": "player.html",
+  "start_url": "player.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#1b1410",
+  "theme_color": "#1b1410",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

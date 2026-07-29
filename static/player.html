@@ -4,7 +4,12 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#1b1410">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <title>Playlist Studio Player</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="player.css">
 </head>
 <body>
@@ -56,11 +61,11 @@
 
         <div class="transport">
           <div class="play-button-wrap" id="play-button-wrap">
-            <button class="play-button" id="play-button" aria-label="Play next track">▶</button>
+            <button class="play-button" id="play-button" aria-label="Play next track" data-lock-allowed>▶</button>
           </div>
           <div class="transport-info">
             <span class="next-track-label" id="next-track-label"></span>
-            <button class="resume-button" id="resume-button" aria-label="Resume current song">▶ Resume Current Song</button>
+            <button class="resume-button" id="resume-button" aria-label="Resume current song" data-lock-allowed>▶ Resume Current Song</button>
           </div>
         </div>
       </section>
