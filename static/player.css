@@ -57,7 +57,7 @@ button { -webkit-tap-highlight-color: transparent; }
 
 .player-view { display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .player-pane { flex: 0 0 53%; min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 18px 24px 14px; overflow: hidden; text-align: center; }
-.player-art-wrap { width: clamp(100px, min(46vw, 180px, calc(100svh - 360px)), 180px); height: clamp(100px, min(46vw, 180px, calc(100svh - 360px)), 180px); flex: 0 1 auto; aspect-ratio: 1; margin: 0 auto 12px; }
+.player-art-wrap { width: clamp(0px, min(46vw, 180px, calc(100svh - 360px)), 180px); height: clamp(0px, min(46vw, 180px, calc(100svh - 360px)), 180px); min-width: 0; min-height: 0; flex: 0 1 auto; aspect-ratio: 1; margin: 0 auto 12px; }
 .player-art { width: 100%; height: 100%; display: block; border-radius: 16px; object-fit: cover; background: linear-gradient(135deg, #76523b, #30221a 70%); box-shadow: 0 20px 50px -20px #000; }
 .player-art.placeholder { display: grid; place-items: center; color: var(--gold-light); font-size: 50px; }
 .player-art.placeholder::after { content: "♪"; }
@@ -138,8 +138,8 @@ button { -webkit-tap-highlight-color: transparent; }
 
 @media (min-width: 700px) { .app-shell { border-right: 1px solid var(--line); border-left: 1px solid var(--line); } }
 @media (max-height: 700px) {
-  .player-pane { flex-basis: 51%; padding-top: 10px; }
-  .player-art-wrap { width: clamp(100px, min(38vw, 170px, calc(100svh - 330px)), 170px); height: clamp(100px, min(38vw, 170px, calc(100svh - 330px)), 170px); margin-bottom: 9px; }
+  .player-pane { flex-basis: 53%; padding-top: 10px; }
+  .player-art-wrap { width: clamp(0px, min(38vw, 170px, calc(100svh - 330px)), 170px); height: clamp(0px, min(38vw, 170px, calc(100svh - 330px)), 170px); margin-bottom: 9px; }
   .scrub { margin-top: 11px; }
   .transport { margin-top: 0; }
 }
