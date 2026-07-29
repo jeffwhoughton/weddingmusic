@@ -1,17 +1,4 @@
 - Make it so if the app is in expanded mode, and is unlocked for more than 30 seconds, it becomes locked.
 - Volume balancing
-- Mobile Player with Google Drive Download, port python
-
-- Finish Pizza Party 2
-- Finish Cocktails + Dinner
-
-Reception:
-- Stacy's Mom
-- Better Off Alone
-
-Pizza Party Songs:
-- Hallucinogenics
-- What's My Age Again
-- One D Song?
-- Ex's and Oh's
-- Seven Nation Army
+- Add Alex Here:
+https://console.cloud.google.com/auth/audience?project=gen-lang-client-0671096340

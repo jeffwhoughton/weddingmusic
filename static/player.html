@@ -9,7 +9,7 @@
 </head>
 <body>
   <div class="download-screen" id="download-screen">
-    <div class="download-mark">Playlist <span>&amp;</span> Studio</div>
+    <div class="download-mark">Alex <span>&amp;</span> Jeff</div>
     <div class="download-card">
       <div class="eyebrow">Mobile player</div>
       <h1>Loading your sets</h1>
@@ -55,18 +55,14 @@
         </div>
 
         <div class="transport">
-          <button class="play-button" id="play-button" aria-label="Play or pause">▶</button>
+          <button class="play-button" id="play-button" aria-label="Play next track">▶</button>
+          <span class="next-track-label" id="next-track-label"></span>
         </div>
-
-        <button class="fade-button" id="fade-button" data-lock-allowed>Play Next Track</button>
       </section>
 
       <section class="setlist-pane" id="setlist-pane">
-        <div class="setlist-heading">
-          <div class="eyebrow">Full setlist</div>
-          <div class="setlist-title" id="setlist-title"></div>
-        </div>
         <div class="setlist" id="setlist"></div>
+        <div class="scroll-pip-track" aria-hidden="true"><div class="scroll-pip" id="scroll-pip"></div></div>
       </section>
     </section>
   </main>

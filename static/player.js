@@ -250,7 +250,7 @@ function parseItem(folder, entry) {
   return {
     type: "song", name: title || "Unknown Title", artist: artist || "Unknown Artist", emoji,
     position: parsePosition(filename), filename, folder, entry, blob: null, url: null,
-    artUrl: null, duration: 0, transitionPoint: null, startPoint: null, waveform: null, metadataLoaded: false,
+    artUrl: null, artBlob: null, duration: 0, transitionPoint: null, startPoint: null, waveform: null, metadataLoaded: false,
   };
 }
 
@@ -332,8 +332,9 @@ async function loadItemMetadata(item) {
   if (tags) {
     item.transitionPoint = numberFromTag(tags, "PS_TRANSITION");
     item.startPoint = numberFromTag(tags, "PS_START");
-    if (tags.picture?.data?.length) {
-      const picture = new Blob([new Uint8Array(tags.picture.data)], { type: tags.picture.format || "image/jpeg" });
+    const pictureTag = tags.picture || tags.APIC || tags.covr;
+    if (pictureTag?.data?.length) {
+      const picture = new Blob([new Uint8Array(pictureTag.data)], { type: pictureTag.format || pictureTag.mime || "image/jpeg" });
       item.artBlob = picture;
     }
   }
@@ -363,9 +364,7 @@ function ensureArtUrl(item) {
 function releaseItemResources(item) {
   if (!item) return;
   if (item.url) { URL.revokeObjectURL(item.url); state.urls.delete(item.url); item.url = null; }
-  if (item.artUrl) { URL.revokeObjectURL(item.artUrl); state.urls.delete(item.artUrl); item.artUrl = null; }
   item.blob = null;
-  item.artBlob = null;
   item.tagsPromise = null;
   item.metadataLoaded = false;
 }
@@ -464,7 +463,6 @@ function renderDrawer() {
 function renderSetlist() {
   const group = state.selectedGroup;
   if (!group) return;
-  $("setlist-title").textContent = group.name;
   const html = [];
   for (const section of group.sections) {
     html.push(`<div class="set-section">${esc(section.name)}</div>`);
@@ -484,6 +482,30 @@ function renderSetlist() {
     const currentRow = $("setlist").querySelector(`.song-row[data-song="${state.current.globalIndex}"]`);
     if (currentRow) currentRow.scrollIntoView({ block: "center", behavior: "smooth" });
   }
+  updateScrollPip();
+}
+
+function updateScrollPip() {
+  const list = $("setlist");
+  const pip = $("scroll-pip");
+  if (!list || !pip) return;
+  const range = list.scrollHeight - list.clientHeight;
+  const trackRange = Math.max(0, list.clientHeight - 16 - pip.offsetHeight);
+  pip.style.transform = `translateY(${range > 0 ? list.scrollTop / range * trackRange : 0}px)`;
+  pip.style.opacity = range > 0 ? "1" : "0";
+}
+
+async function preloadArtwork(group) {
+  await Promise.all(group.songs.map(async (item) => {
+    try {
+      await ensureBlob(item);
+      const tags = await loadTags(item);
+      const pictureTag = tags?.picture || tags?.APIC || tags?.covr;
+      if (pictureTag?.data?.length) item.artBlob = new Blob([new Uint8Array(pictureTag.data)], { type: pictureTag.format || pictureTag.mime || "image/jpeg" });
+      ensureArtUrl(item);
+    } catch (_) {}
+  }));
+  if (state.selectedGroup === group) renderSetlist();
 }
 
 function updatePlayer() {
@@ -493,7 +515,7 @@ function updatePlayer() {
   $("player-artist").textContent = item?.artist || "Select a song below to begin";
   setImage($("player-art"), item ? ensureArtUrl(item) : "");
   updatePlayButton();
-  updateFadeButton();
+  updateNextTrackLabel();
   updateMarkers();
   if (item) {
     drawWaveform(item);
@@ -502,13 +524,15 @@ function updatePlayer() {
 }
 
 function updatePlayButton() {
-  $("play-button").textContent = state.current && !audioA.paused ? "⏸" : "▶";
+  const button = $("play-button");
+  const playing = state.current && !audioA.paused;
+  button.textContent = playing ? "⏸" : "▶";
+  button.setAttribute("aria-label", playing ? "Fade to pause" : "Play next track");
 }
 
-function updateFadeButton() {
-  const button = $("fade-button");
-  button.classList.toggle("is-fading", state.fading);
-  button.textContent = state.fading ? "Fading…" : (state.current && !audioA.paused ? "Fade to Pause" : "Play Next Track");
+function updateNextTrackLabel() {
+  const next = getNextSong();
+  $("next-track-label").textContent = `Will Play ${next?.name || "the first track"}`;
 }
 
 function updateMarkers() {
@@ -554,6 +578,7 @@ async function selectGroup(id) {
   renderDrawer();
   renderSetlist();
   updatePlayer();
+  preloadArtwork(group);
 }
 
 async function playSong(item, shouldPlay) {
@@ -684,9 +709,8 @@ function fadeToPause() {
     graph.setValueAtTime(1, currentTime);
     state.fading = false;
     updatePlayButton();
-    updateFadeButton();
   }, 5000);
-  updateFadeButton();
+  updatePlayButton();
 }
 
 function playNextTrack() {
@@ -699,8 +723,8 @@ function playNextTrack() {
   else toast("You are at the end of this set.");
 }
 
-function onAudioPlay() { updatePlayButton(); updateFadeButton(); }
-function onAudioPause() { updatePlayButton(); updateFadeButton(); }
+function onAudioPlay() { updatePlayButton(); updateNextTrackLabel(); }
+function onAudioPause() { updatePlayButton(); updateNextTrackLabel(); }
 function onAudioEnded() {
   if (transition.active) return;
   const next = getNextSong();
@@ -728,18 +752,10 @@ function attachAudioListeners() {
   audioA.addEventListener("timeupdate", onAudioTimeUpdate);
 }
 
-function togglePlayback() {
-  if (!state.current) {
-    playNextTrack();
-    return;
-  }
-  if (audioA.paused) {
-    audioA.play().catch(() => toast("Tap play to start audio."));
-    if (transition.active) audioB.play().catch(() => {});
-  } else {
-    audioA.pause();
-    if (transition.active) audioB.pause();
-  }
+function handleTransport() {
+  if (state.fading) return;
+  if (state.current && !audioA.paused) fadeToPause();
+  else playNextTrack();
 }
 
 function onScrubClick(event) {
@@ -803,13 +819,9 @@ async function bootstrap(allowDownload = false) {
 $("menu-button").addEventListener("click", () => setDrawer(true));
 $("menu-close").addEventListener("click", closeDrawer);
 $("drawer-backdrop").addEventListener("click", closeDrawer);
-$("play-button").addEventListener("click", togglePlayback);
-$("fade-button").addEventListener("click", () => {
-  if (state.fading) return;
-  if (audioA.paused) playNextTrack();
-  else fadeToPause();
-});
+$('play-button').addEventListener("click", handleTransport);
 $("scrub-track").addEventListener("click", onScrubClick);
+$("setlist").addEventListener("scroll", updateScrollPip, { passive: true });
 $("lock-button").addEventListener("click", () => {
   if (state.locked) showLockPrompt();
   else { state.locked = true; $("lock-button").textContent = "🔓"; }

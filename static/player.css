@@ -58,36 +58,36 @@ button { -webkit-tap-highlight-color: transparent; }
 .player-title { max-width: 100%; overflow: hidden; font: 600 clamp(21px, 6vw, 28px)/1.1 Fraunces, serif; text-overflow: ellipsis; white-space: nowrap; }
 .player-artist { margin-top: 5px; overflow: hidden; color: var(--cream-dim); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .scrub { margin-top: 19px; }
-.scrub-track { position: relative; height: 46px; overflow: visible; border-radius: 6px; background: rgba(56,41,31,.8); cursor: pointer; }
-#waveform-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.scrub-track { position: relative; height: 46px; overflow: visible; border-radius: 6px; background: rgba(56,41,31,.8); cursor: pointer; outline: 0; user-select: none; -webkit-tap-highlight-color: transparent; }
+.scrub-track:focus, .scrub-track:active { outline: 0; }
+#waveform-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; user-select: none; }
 .scrub-fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 6px 0 0 6px; background: linear-gradient(90deg, rgba(224,166,78,.42), rgba(224,111,125,.42)); pointer-events: none; }
 .scrub-marker { position: absolute; top: -5px; bottom: -5px; z-index: 2; width: 3px; border-radius: 3px; pointer-events: none; }
 .start-marker { display: none; background: #58d296; box-shadow: 0 0 8px rgba(88,210,150,.8); }
 .transition-marker { display: none; background: var(--purple); box-shadow: 0 0 8px rgba(164,123,255,.9); }
 .scrub-times { display: flex; justify-content: space-between; margin-top: 7px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.transport { display: flex; justify-content: center; margin-top: 13px; }
+.transport { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 13px; }
 .play-button { width: 54px; height: 54px; border: 0; border-radius: 50%; color: #2a1c08; background: linear-gradient(180deg, var(--gold-light), var(--gold)); box-shadow: 0 10px 24px -8px rgba(224,166,78,.7); cursor: pointer; font-size: 21px; }
 .play-button:active { transform: scale(.95); }
-.fade-button { width: min(100%, 220px); margin: 12px auto 0; padding: 8px 12px; border: 1px solid rgba(224,166,78,.34); border-radius: 8px; color: var(--gold-light); background: rgba(224,166,78,.08); cursor: pointer; font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.fade-button.is-fading { color: var(--rose); border-color: rgba(224,111,125,.65); }
+.next-track-label { max-width: min(42vw, 190px); overflow: hidden; color: var(--cream-dim); font-size: 11px; line-height: 1.3; text-align: left; text-overflow: ellipsis; }
 
 .setlist-pane { flex: 1 1 47%; min-height: 0; border-top: 1px solid var(--line); }
-.setlist-heading { padding: 12px 20px 8px; }
-.setlist-title { margin-top: 4px; color: var(--cream); font: 500 17px Fraunces, serif; }
-.setlist { height: calc(100% - 65px); overflow-y: auto; padding: 0 12px 30px; overscroll-behavior: contain; }
-.setlist::-webkit-scrollbar { width: 5px; }
-.setlist::-webkit-scrollbar-thumb { border-radius: 5px; background: var(--line); }
+.setlist { position: relative; width: min(100%, 570px); height: 100%; margin: 0 auto; overflow-x: hidden; overflow-y: scroll; padding: 0 18px 30px 12px; overscroll-behavior: contain; scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+.setlist::-webkit-scrollbar { width: 9px; }
+.setlist::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 5px; background: var(--line); background-clip: padding-box; cursor: grab; }
+.scroll-pip-track { position: absolute; top: 8px; right: 3px; bottom: 8px; width: 3px; border-radius: 3px; background: rgba(231,205,168,.08); pointer-events: none; }
+.scroll-pip { position: absolute; top: 0; left: -2px; width: 7px; height: 34px; border-radius: 5px; background: var(--gold); box-shadow: 0 0 8px rgba(224,166,78,.65); transform: translateY(0); }
 .set-section { display: flex; align-items: center; gap: 8px; margin: 13px 8px 5px; color: var(--gold); font: italic 12px Fraunces, serif; letter-spacing: .1em; text-transform: uppercase; }
 .set-section::before, .set-section::after { height: 1px; flex: 1; background: var(--line); content: ''; }
 .set-divider { display: flex; align-items: center; gap: 8px; margin: 11px 10px 5px; color: var(--gold-light); font: italic 11px Fraunces, serif; letter-spacing: .08em; text-transform: uppercase; }
 .set-divider::before, .set-divider::after { height: 1px; flex: 1; background: var(--line); content: ''; }
-.song-row { display: grid; grid-template-columns: 25px 40px minmax(0,1fr) auto; align-items: center; gap: 9px; padding: 7px 9px; border: 1px solid transparent; border-radius: 9px; text-align: left; }
+.song-row { display: grid; grid-template-columns: 25px 40px minmax(0,1fr) auto; align-items: center; gap: 9px; width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid transparent; border-radius: 9px; color: var(--cream); background: transparent; text-align: left; }
 .song-row.current { border-color: rgba(224,111,125,.3); background: rgba(224,111,125,.12); }
 .song-number { color: var(--muted); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
 .song-art { width: 40px; height: 40px; border-radius: 7px; object-fit: cover; background: var(--panel-light); }
 .song-meta { min-width: 0; }
-.song-name, .song-artist { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.song-name { color: var(--cream); font-size: 13px; font-weight: 600; }
+.song-name, .song-artist { overflow: hidden; text-overflow: ellipsis; }
+.song-name { display: -webkit-box; color: var(--cream); font-size: 13px; font-weight: 600; line-height: 1.25; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .song-artist { margin-top: 2px; color: var(--muted); font-size: 11px; }
 .song-duration { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 
@@ -124,5 +124,4 @@ button { -webkit-tap-highlight-color: transparent; }
   .player-art-wrap { width: min(38vw, 170px); margin-bottom: 9px; }
   .scrub { margin-top: 11px; }
   .transport { margin-top: 8px; }
-  .fade-button { margin-top: 7px; }
 }
