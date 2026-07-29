@@ -72,13 +72,12 @@ button { -webkit-tap-highlight-color: transparent; }
 .start-marker { display: none; background: #58d296; box-shadow: 0 0 8px rgba(88,210,150,.8); }
 .transition-marker { display: none; background: var(--purple); box-shadow: 0 0 8px rgba(164,123,255,.9); }
 .scrub-times { display: flex; justify-content: space-between; margin-top: 7px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.transport { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 13px; }
+.transport { position: relative; display: flex; align-items: center; justify-content: center; margin-top: 13px; }
 .play-button-wrap { display: grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; background: transparent; }
 .play-button-wrap.is-fading { background: conic-gradient(var(--rose) var(--fade-progress), rgba(224,111,125,.16) 0); }
 .play-button { width: 54px; height: 54px; border: 0; border-radius: 50%; color: #2a1c08; background: linear-gradient(180deg, var(--gold-light), var(--gold)); box-shadow: 0 10px 24px -8px rgba(224,166,78,.7); cursor: pointer; font-size: 21px; }
 .play-button:active { transform: scale(.95); }
-.transport-info { display: flex; flex-direction: column; align-items: flex-start; max-width: min(42vw, 190px); }
-.next-track-label { overflow: hidden; color: var(--cream-dim); font-size: 11px; line-height: 1.3; text-align: left; text-overflow: ellipsis; }
+.transport-info { position: absolute; left: calc(50% + 46px); display: flex; flex-direction: column; align-items: flex-start; max-width: min(42vw, 190px); }
 .resume-button { margin-top: 3px; padding: 0; border: 0; color: var(--gold); background: transparent; cursor: pointer; font-size: 9px; line-height: 1.2; }
 .resume-button:hover { color: var(--gold-light); }
 @property --fade-progress { syntax: '<angle>'; inherits: false; initial-value: 0deg; }

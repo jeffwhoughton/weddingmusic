@@ -1,5 +1,5 @@
 const GOOGLE_CLIENT_ID = "465530902895-smsu60b8qvdv83ahrbr7pi7grl5cjh8b.apps.googleusercontent.com";
-const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/19H_bV5SUmExeeLFATTvdJV2lBPrAoaJn?alt=media&acknowledgeAbuse=true";
+const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/1lUa77Q3JTy3-lEzIn7yGs_vgllm9iKEA?alt=media&acknowledgeAbuse=true";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
@@ -22,6 +22,8 @@ const state = {
   urls: new Set(),
   locked: false,
   fading: false,
+  fadePaused: null,
+  resumeFadeIn: false,
 };
 
 let audioA = document.getElementById("audio-a");
@@ -189,10 +191,10 @@ async function getZipBlob(allowDownload = false) {
   const cached = await readCachedZip();
   if (cached?.blob) {
     try {
-      await JSZip.loadAsync(cached.blob);
+      const zip = await JSZip.loadAsync(cached.blob);
       $("cache-note").textContent = `Cached ${new Date(cached.savedAt).toLocaleDateString()}`;
       setDownloadStatus("Opening the cached archive…", 1);
-      return cached.blob;
+      return { blob: cached.blob, zip };
     } catch (_) {
       await removeCachedZip();
     }
@@ -203,10 +205,10 @@ async function getZipBlob(allowDownload = false) {
     throw error;
   }
   const downloaded = await downloadZip();
-  await JSZip.loadAsync(downloaded);
+  const zip = await JSZip.loadAsync(downloaded);
   await writeCachedZip(downloaded);
   $("cache-note").textContent = "Cached on this device";
-  return downloaded;
+  return { blob: downloaded, zip };
 }
 
 function fileSort(a, b) {
@@ -256,8 +258,8 @@ function parseItem(folder, entry) {
   };
 }
 
-async function extractPlaylists(blob) {
-  const zip = await JSZip.loadAsync(blob);
+async function extractPlaylists(blob, loadedZip = null) {
+  const zip = loadedZip || await JSZip.loadAsync(blob);
   const physicalFolders = new Set(GROUPS.flatMap((group) => group.folders));
   const entries = new Map();
   for (const path of Object.keys(zip.files)) {
@@ -657,13 +659,9 @@ function updatePlayButton() {
 }
 
 function updateNextTrackLabel() {
-  const next = state.started ? getNextSong() : state.current;
   const playing = state.fading || (state.current && !audioA.paused);
-  const label = $("next-track-label");
   const resume = $("resume-button");
-  label.textContent = `Will Play ${next?.name || "the first track"}`;
-  label.hidden = Boolean(playing);
-  resume.hidden = Boolean(playing || !state.started);
+  resume.hidden = Boolean(playing || !state.fadePaused);
 }
 
 function updateMarkers() {
@@ -732,11 +730,13 @@ async function selectGroup(id) {
   preloadArtwork(group);
 }
 
-async function playSong(item, shouldPlay) {
+async function playSong(item, shouldPlay, respectInPoint = true) {
   if (!item) return;
   const previous = state.current;
   abortTransition();
   state.fading = false;
+  state.fadePaused = null;
+  state.resumeFadeIn = false;
   state.started = true;
   state.current = item;
   state.currentIndex = state.songs.indexOf(item);
@@ -756,7 +756,7 @@ async function playSong(item, shouldPlay) {
       audioA.addEventListener("error", resolve, { once: true });
     }
   });
-  if (state.current === item) await seekToInPoint(audioA, item);
+  if (state.current === item && respectInPoint) await seekToInPoint(audioA, item);
   if (shouldPlay) audioA.play().catch(() => toast("Tap play to start audio."));
   if (previous && previous !== item) releaseItemResources(previous);
   renderSetlist();
@@ -949,16 +949,54 @@ function fadeToPause() {
   graph.cancelScheduledValues(now);
   graph.setValueAtTime(1, now);
   graph.linearRampToValueAtTime(0, now + 5);
-  setTimeout(() => {
+  setTimeout(async () => {
+    if (!state.fading) return;
+    const pausedTime = audioA.currentTime;
+    const pausedItem = state.current;
     audioA.pause();
     const currentTime = audioContext.currentTime;
     graph.cancelScheduledValues(currentTime);
     graph.setValueAtTime(1, currentTime);
     state.fading = false;
+    const checkpoint = { item: pausedItem, time: pausedTime };
+    state.fadePaused = checkpoint;
+    const next = getNextSong();
+    if (next) {
+      await playSong(next, false, false);
+      state.fadePaused = checkpoint;
+    }
     updatePlayButton();
     updateNextTrackLabel();
   }, 5000);
   updatePlayButton();
+}
+
+async function goBackToPaused() {
+  const checkpoint = state.fadePaused;
+  if (!checkpoint || state.fading) return;
+  await playSong(checkpoint.item, false, false);
+  const target = Math.max(0, Math.min(audioA.duration || checkpoint.item.duration || checkpoint.time, checkpoint.time));
+  audioA.currentTime = target;
+  state.fadePaused = null;
+  state.resumeFadeIn = true;
+  onAudioTimeUpdate();
+  updatePlayer();
+}
+
+async function playCurrentWithFadeIn() {
+  if (!state.current || state.fading) return;
+  if (!state.resumeFadeIn) {
+    audioA.play().catch(() => toast("Tap play to start audio."));
+    return;
+  }
+  state.resumeFadeIn = false;
+  initAudioGraph();
+  const gain = audioGraphs.get(audioA).gain.gain;
+  const now = audioContext.currentTime;
+  gain.cancelScheduledValues(now);
+  gain.setValueAtTime(0, now);
+  gain.linearRampToValueAtTime(1, now + 1);
+  audioA.play().catch(() => toast("Tap play to start audio."));
 }
 
 function playNextTrack() {
@@ -1005,12 +1043,8 @@ function handleTransport() {
   if (state.fading) return;
   if (state.current && !audioA.paused) fadeToPause();
   else if (state.current && !state.started) playSong(state.current, true);
+  else if (state.current) playCurrentWithFadeIn();
   else playNextTrack();
-}
-
-function resumePlayback() {
-  if (!state.current || state.fading) return;
-  audioA.play().catch(() => toast("Tap play to start audio."));
 }
 
 function onScrubClick(event) {
@@ -1073,9 +1107,9 @@ async function clearCache() {
 
 async function bootstrap(allowDownload = false) {
   try {
-    const blob = await getZipBlob(allowDownload);
+    const archive = await getZipBlob(allowDownload);
     setDownloadStatus("Preparing the sets…", .98);
-    state.groups = await extractPlaylists(blob);
+    state.groups = await extractPlaylists(archive.blob, archive.zip);
     const missing = state.groups.filter((group) => !group.songs.length);
     if (missing.length) throw new Error(`The archive is missing ${missing[0].name}.`);
     renderPicker();
@@ -1097,7 +1131,7 @@ $("menu-button").addEventListener("click", () => setDrawer(true));
 $("menu-close").addEventListener("click", closeDrawer);
 $("drawer-backdrop").addEventListener("click", closeDrawer);
 $('play-button').addEventListener("click", handleTransport);
-$("resume-button").addEventListener("click", resumePlayback);
+$("resume-button").addEventListener("click", goBackToPaused);
 $("scrub-track").addEventListener("click", onScrubClick);
 $("setlist").addEventListener("scroll", updateScrollPip, { passive: true });
 $("lock-button").addEventListener("click", () => {
@@ -1137,7 +1171,7 @@ if (navigator.mediaSession) {
   const setMediaAction = (action, handler) => {
     try { navigator.mediaSession.setActionHandler(action, handler); } catch (_) {}
   };
-  setMediaAction("play", resumePlayback);
+  setMediaAction("play", playCurrentWithFadeIn);
   setMediaAction("pause", () => {
     if (!audioA.paused) fadeToPause();
   });
