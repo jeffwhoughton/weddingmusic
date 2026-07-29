@@ -21,12 +21,10 @@ import sys
 import uuid
 import shutil
 import unicodedata
-from http.cookiejar import CookieJar
-from urllib.request import HTTPCookieProcessor, Request, build_opener
 from pathlib import Path
 
 from flask import (
-    Flask, jsonify, request, send_file, send_from_directory, abort, Response, stream_with_context
+    Flask, jsonify, request, send_file, send_from_directory, abort, Response
 )
 
 try:
@@ -528,59 +526,9 @@ def index():
     return send_from_directory(STATIC_DIR, "index.html")
 
 
-@app.route("/player.html")
-@app.route("/player")
-def mobile_player():
-    return send_from_directory(STATIC_DIR, "player.html")
-
-
 @app.route("/static/<path:fn>")
 def static_files(fn):
     return send_from_directory(STATIC_DIR, fn)
-
-
-@app.get("/api/player-zip")
-def api_player_zip():
-    drive_id = "19H_bV5SUmExeeLFATTvdJV2lBPrAoaJn"
-    drive_url = f"https://drive.usercontent.google.com/download?id={drive_id}&export=download&confirm=t"
-    try:
-        opener = build_opener(HTTPCookieProcessor(CookieJar()))
-        request_to_drive = Request(drive_url, headers={"User-Agent": "Mozilla/5.0"})
-        remote = opener.open(request_to_drive, timeout=30)
-        content_type = (remote.headers.get("Content-Type") or "").lower()
-        if "text/html" in content_type:
-            confirmation_page = remote.read(2 * 1024 * 1024).decode("utf-8", "ignore")
-            remote.close()
-            token_match = re.search(r'name=["\']confirm["\']\s+value=["\']([^"\']+)', confirmation_page, re.IGNORECASE)
-            if not token_match:
-                token_match = re.search(r"[?&]confirm=([0-9A-Za-z_-]+)", confirmation_page)
-            if not token_match:
-                raise RuntimeError("Google Drive returned a download confirmation page.")
-            confirmed_url = f"https://drive.usercontent.google.com/download?id={drive_id}&export=download&confirm={token_match.group(1)}"
-            remote = opener.open(Request(confirmed_url, headers={"User-Agent": "Mozilla/5.0"}), timeout=30)
-            if "text/html" in (remote.headers.get("Content-Type") or "").lower():
-                remote.close()
-                raise RuntimeError("Google Drive did not return a ZIP archive.")
-    except Exception as exc:
-        return jsonify({"error": f"Could not download playlist archive: {exc}"}), 502
-
-    content_length = remote.headers.get("Content-Length")
-    response_headers = {"Content-Disposition": 'attachment; filename="playlists.zip"'}
-    if content_length:
-        response_headers["Content-Length"] = content_length
-
-    @stream_with_context
-    def stream_archive():
-        try:
-            while True:
-                chunk = remote.read(1024 * 1024)
-                if not chunk:
-                    break
-                yield chunk
-        finally:
-            remote.close()
-
-    return Response(stream_archive(), mimetype="application/zip", headers=response_headers)
 
 
 # --------------------------------------------------------------------------- #

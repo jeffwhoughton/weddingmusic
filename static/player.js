@@ -1,4 +1,4 @@
-const DRIVE_URL = "/api/player-zip";
+const DRIVE_URL = "https://drive.google.com/uc?export=download&id=19H_bV5SUmExeeLFATTvdJV2lBPrAoaJn";
 const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
 const LOCK_PASSWORD = "1235";
@@ -99,14 +99,12 @@ async function downloadZip() {
     response = await fetch(DRIVE_URL, { cache: "no-store", signal: controller.signal });
   } catch (error) {
     if (error.name === "AbortError") throw new Error("Google Drive did not respond within 45 seconds.");
-    throw new Error("Could not connect to the playlist download service.");
+    throw new Error("Google Drive blocked the browser download. Host the ZIP on a CORS-enabled file host.");
   } finally {
     clearTimeout(timeout);
   }
   if (!response.ok) {
-    let message = `Download service returned ${response.status}.`;
-    try { message = (await response.json()).error || message; } catch (_) {}
-    throw new Error(message);
+    throw new Error(`Google Drive returned HTTP ${response.status}. Check that the file is publicly downloadable.`);
   }
 
   if (!response.body) {

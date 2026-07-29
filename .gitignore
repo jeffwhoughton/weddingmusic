@@ -1,2 +1,3 @@
 playlists/*
 !playlists/.gitkeep
+__pycache__/*
