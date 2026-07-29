@@ -2276,27 +2276,61 @@ $("bpm-input").addEventListener("keydown", async (e) => {
 });
 
 /* --------------------------------------------------------- global search */
+const searchModal = $("search-modal");
+const searchStatus = $("search-status");
+const searchResults = $("search-results");
+
+function closeSearchModal() {
+  searchModal.classList.remove("show");
+}
+
+$("search-close").addEventListener("click", closeSearchModal);
+searchModal.addEventListener("click", (e) => {
+  if (e.target === searchModal) closeSearchModal();
+});
+
 $("global-search").addEventListener("keydown", async (e) => {
   if (e.key !== "Enter") return;
   const query = e.target.value.trim().toLowerCase();
   e.target.value = "";
   if (!query) return;
 
-  const playlists = await api("GET", "/api/playlists");
-  const hits = [];
-  for (const pl of playlists) {
-    const data = await api("GET", `/api/playlists/${encodeURIComponent(pl.name)}`);
-    const found = data.items.some(
-      (it) => it.type === "song" &&
-        (it.title.toLowerCase().includes(query) || it.artist.toLowerCase().includes(query))
-    );
-    if (found) hits.push(pl.name);
-  }
+  searchModal.classList.add("show");
+  searchStatus.classList.remove("err");
+  searchStatus.innerHTML = '<span class="spinner"></span> Searching playlists…';
+  searchResults.innerHTML = "";
 
-  if (hits.length === 0) {
-    toast(`No matches for "${query}"`);
-  } else {
-    toast(`"${query}" in: ${hits.join(", ")}`);
+  try {
+    const playlists = await api("GET", "/api/playlists");
+    const results = [];
+    const playlistData = await Promise.all(
+      playlists.map((pl) => api("GET", `/api/playlists/${encodeURIComponent(pl.name)}`))
+    );
+
+    for (let i = 0; i < playlistData.length; i++) {
+      for (const it of playlistData[i].items) {
+        const title = String(it.title || "");
+        const artist = String(it.artist || "");
+        if (it.type === "song" &&
+            (title.toLowerCase().includes(query) || artist.toLowerCase().includes(query))) {
+          results.push({ playlist: playlists[i].name, title, artist });
+        }
+      }
+    }
+
+    searchStatus.textContent = results.length
+      ? `${results.length} match${results.length === 1 ? "" : "es"}`
+      : `No matches for "${query}"`;
+    searchResults.innerHTML = results.map((result) => `
+      <div class="search-result">
+        <div class="search-result-title">${esc(result.title)}</div>
+        <div class="search-result-artist">${esc(result.artist)}</div>
+        <div class="search-result-playlist">${esc(result.playlist)}</div>
+      </div>
+    `).join("");
+  } catch (_) {
+    searchStatus.textContent = "Search failed. Please try again.";
+    searchStatus.classList.add("err");
   }
 });
 

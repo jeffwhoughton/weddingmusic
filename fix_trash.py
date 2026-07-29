@@ -6,7 +6,7 @@ from pathlib import Path
 from mutagen import File as MutagenFile
 from app import read_audio_meta, sanitize
 
-DEFAULT_FOLDER = Path("playlists/Reception 2")
+DEFAULT_FOLDER = Path("playlists/Reception 3")
 CORRUPTED_PATTERN = re.compile(r"^\.?stage_[a-f0-9]+_(\d+)(?:\.\w+)?$")
 RENUMBER_PATTERN = re.compile(r"^\.renumber_([a-f0-9]+)_(\d+)$")
 RECOVERED_PATTERN = re.compile(r"^\d+\s*-\s*\.recover_[a-f0-9]+_\d+$")

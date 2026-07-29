@@ -500,6 +500,29 @@ body::after {
 .modal .status { margin-top: 14px; font-size: 13px; color: var(--gold-soft); min-height: 18px; }
 .modal .status.err { color: var(--rose-soft); }
 
+.search-modal-content { width: 520px; max-height: 78vh; overflow: hidden; }
+.search-status {
+  min-height: 22px; margin: 12px 0 10px;
+  color: var(--gold-soft); font-size: 13px;
+}
+.search-status.err { color: var(--rose-soft); }
+.search-results { max-height: 52vh; overflow-y: auto; }
+.search-result {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 14px; padding: 11px 0;
+  border-top: 1px solid var(--line);
+}
+.search-result-title {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--cream); font-size: 14px; font-weight: 600;
+}
+.search-result-artist { color: var(--cream-dim); font-size: 12px; }
+.search-result-playlist {
+  grid-column: 2; grid-row: 1 / span 2;
+  align-self: center; color: var(--gold); font-size: 11px;
+  text-align: right; white-space: nowrap;
+}
+
 /* toast */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
