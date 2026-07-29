@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1b1410">
+  <title>Playlist Studio Player</title>
+  <link rel="stylesheet" href="/static/player.css">
+</head>
+<body>
+  <div class="download-screen" id="download-screen">
+    <div class="download-mark">Playlist <span>&amp;</span> Studio</div>
+    <div class="download-card">
+      <div class="eyebrow">Mobile player</div>
+      <h1>Loading your sets</h1>
+      <p id="download-status">Checking the local cache…</p>
+      <div class="progress-track"><div class="progress-fill" id="download-progress"></div></div>
+      <button class="wide-button" id="download-retry" hidden>Try again</button>
+    </div>
+  </div>
+
+  <main class="app-shell" id="app-shell" hidden>
+    <header class="mobile-header">
+      <button class="icon-button" id="menu-button" aria-label="Open playlists">
+        <span class="hamburger"><i></i><i></i><i></i></span>
+      </button>
+      <div class="header-center">
+        <div class="eyebrow">Now playing</div>
+        <div class="header-playlist" id="header-playlist">Choose a set</div>
+      </div>
+      <button class="icon-button lock-button" id="lock-button" aria-label="Lock screen" data-lock-allowed>🔒</button>
+    </header>
+
+    <section class="playlist-picker" id="playlist-picker">
+      <div class="picker-kicker">Choose a room</div>
+      <h1>Which set are we in?</h1>
+      <div class="picker-list" id="picker-list"></div>
+    </section>
+
+    <section class="player-view" id="player-view" hidden>
+      <section class="player-pane" id="player-pane">
+        <div class="player-art-wrap"><div class="player-art placeholder" id="player-art" role="img" aria-label="Album art"></div></div>
+        <div class="player-title" id="player-title"></div>
+        <div class="player-artist" id="player-artist"></div>
+
+        <div class="scrub" id="scrub">
+          <div class="scrub-track" id="scrub-track">
+            <canvas id="waveform-canvas"></canvas>
+            <div class="scrub-fill" id="scrub-fill"></div>
+            <div class="scrub-marker start-marker" id="start-marker"></div>
+            <div class="scrub-marker transition-marker" id="transition-marker"></div>
+          </div>
+          <div class="scrub-times"><span id="time-current">0:00</span><span id="time-duration">0:00</span></div>
+        </div>
+
+        <div class="transport">
+          <button class="play-button" id="play-button" aria-label="Play or pause">▶</button>
+        </div>
+
+        <button class="fade-button" id="fade-button" data-lock-allowed>Play Next Track</button>
+      </section>
+
+      <section class="setlist-pane" id="setlist-pane">
+        <div class="setlist-heading">
+          <div class="eyebrow">Full setlist</div>
+          <div class="setlist-title" id="setlist-title"></div>
+        </div>
+        <div class="setlist" id="setlist"></div>
+      </section>
+    </section>
+  </main>
+
+  <aside class="menu-drawer" id="menu-drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <div><div class="eyebrow">Playlist Studio</div><h2>Your sets</h2></div>
+      <button class="icon-button" id="menu-close" aria-label="Close playlists">&times;</button>
+    </div>
+    <div class="drawer-playlists" id="drawer-playlists"></div>
+    <div class="drawer-foot">
+      <button class="drawer-action" id="clear-cache-button">↻ Clear cache and redownload ZIP</button>
+      <span class="cache-note" id="cache-note"></span>
+    </div>
+  </aside>
+  <div class="drawer-backdrop" id="drawer-backdrop"></div>
+
+  <div class="modal-layer" id="lock-modal" hidden>
+    <div class="modal-card">
+      <button class="modal-close" id="lock-close" aria-label="Close">&times;</button>
+      <div class="eyebrow">Private room</div>
+      <h2>Screen locked</h2>
+      <p>Enter the password to interact with the player.</p>
+      <input id="lock-password" type="password" inputmode="numeric" autocomplete="off" placeholder="Password">
+      <div class="modal-status" id="lock-status"></div>
+      <button class="wide-button" id="lock-submit">Unlock</button>
+    </div>
+  </div>
+
+  <div class="modal-layer" id="confirm-modal" hidden>
+    <div class="modal-card">
+      <div class="eyebrow">Local cache</div>
+      <h2>Redownload the sets?</h2>
+      <p>The cached ZIP will be removed and downloaded again. This can take a moment.</p>
+      <div class="modal-actions">
+        <button class="drawer-action" id="confirm-cancel">Keep cache</button>
+        <button class="wide-button" id="confirm-clear">Redownload</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <audio id="audio-a"></audio>
+  <audio id="audio-b"></audio>
+
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jsmediatags/3.9.5/jsmediatags.min.js"></script>
+  <script src="/static/player.js"></script>
+</body>
+</html>
