@@ -28,7 +28,7 @@ let audioA = document.getElementById("audio-a");
 let audioB = document.getElementById("audio-b");
 let audioContext = null;
 const audioGraphs = new Map();
-const transition = { active: false, timer: null, duration: 5 };
+const transition = { active: false, timer: null, rateTimer: null, duration: 5 };
 let toastTimer;
 let driveAccessToken = null;
 let driveTokenExpiresAt = 0;
@@ -252,6 +252,7 @@ function parseItem(folder, entry) {
     type: "song", name: title || "Unknown Title", artist: artist || "Unknown Artist", emoji,
     position: parsePosition(filename), filename, folder, entry, blob: null, url: null,
     artUrl: null, artBlob: null, duration: 0, transitionPoint: null, startPoint: null, waveform: null, metadataLoaded: false,
+    quickIntro: false, longOutro: false, longOutroSeconds: 6, bpmOutro: false, manualBpm: null, detectedBpm: null,
   };
 }
 
@@ -313,6 +314,11 @@ function numberFromTag(tags, key) {
   return Number.isFinite(result) ? result : null;
 }
 
+function booleanFromTag(tags, key) {
+  const value = numberFromTag(tags, key);
+  return value !== null && value > 0.5;
+}
+
 function loadTags(item) {
   if (item.tagsPromise) return item.tagsPromise;
   item.tagsPromise = new Promise((resolve) => {
@@ -333,6 +339,11 @@ async function loadItemMetadata(item) {
   if (tags) {
     item.transitionPoint = numberFromTag(tags, "PS_TRANSITION");
     item.startPoint = numberFromTag(tags, "PS_START");
+    item.quickIntro = booleanFromTag(tags, "PS_QUICK_INTRO");
+    item.longOutro = booleanFromTag(tags, "PS_LONG_OUTRO");
+    item.longOutroSeconds = Math.max(1, Math.min(120, numberFromTag(tags, "PS_LONG_OUTRO_SECONDS") || 6));
+    item.bpmOutro = booleanFromTag(tags, "PS_BPM_OUTRO");
+    item.manualBpm = numberFromTag(tags, "PS_BPM");
     const pictureTag = tags.picture || tags.APIC || tags.covr;
     if (pictureTag?.data?.length) {
       const picture = new Blob([new Uint8Array(pictureTag.data)], { type: pictureTag.format || pictureTag.mime || "image/jpeg" });
@@ -352,6 +363,39 @@ async function loadItemMetadata(item) {
   }
   item.metadataLoaded = true;
   return item;
+}
+
+function detectBpm(decoded) {
+  const sampleRate = decoded.sampleRate;
+  const windowSeconds = .023;
+  const windowSize = Math.max(1, Math.floor(windowSeconds * sampleRate));
+  const count = Math.min(Math.floor(decoded.length / windowSize), Math.floor(60 / windowSeconds));
+  if (count < 2) return null;
+  const energy = new Float32Array(count);
+  for (let windowIndex = 0; windowIndex < count; windowIndex++) {
+    let sum = 0;
+    const start = windowIndex * windowSize;
+    for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
+      const data = decoded.getChannelData(channel);
+      for (let sample = start; sample < start + windowSize; sample++) sum += data[sample] * data[sample];
+    }
+    energy[windowIndex] = Math.sqrt(sum / (windowSize * decoded.numberOfChannels));
+  }
+  const onset = new Float32Array(count);
+  for (let index = 1; index < count; index++) onset[index] = Math.max(0, energy[index] - energy[index - 1]);
+  const minLag = Math.max(1, Math.floor((60 / 180) / windowSeconds));
+  const maxLag = Math.min(Math.ceil((60 / 60) / windowSeconds), count - 1);
+  let bestLag = minLag;
+  let bestCorrelation = -Infinity;
+  for (let lag = minLag; lag <= maxLag; lag++) {
+    let correlation = 0;
+    for (let index = 0; index + lag < count; index++) correlation += onset[index] * onset[index + lag];
+    if (correlation > bestCorrelation) { bestCorrelation = correlation; bestLag = lag; }
+  }
+  let bpm = 60 / (bestLag * windowSeconds);
+  while (bpm > 150) bpm /= 2;
+  while (bpm < 75) bpm *= 2;
+  return Math.round(bpm * 10) / 10;
 }
 
 function ensureArtUrl(item) {
@@ -394,6 +438,7 @@ async function analyzeWaveform(item) {
     const p95 = sorted[Math.floor(sorted.length * .95)] || .001;
     for (let index = 0; index < count; index++) normalized[index] = Math.min(1, mono[index] / p95);
     item.waveform = { data: normalized, winSec: .1 };
+    item.detectedBpm = detectBpm(decoded);
 
     if (item.transitionPoint === null) {
       const start = Math.floor(count * .6);
@@ -536,6 +581,16 @@ async function selectInitialSong(item) {
     await loadItemMetadata(item);
     await analyzeWaveform(item);
     if (state.current === item) updatePlayer();
+    preloadTransitionMetadata(item);
+  } catch (_) {}
+}
+
+async function preloadTransitionMetadata(item) {
+  const next = state.songs[state.songs.indexOf(item) + 1];
+  if (!next) return;
+  try {
+    await loadItemMetadata(next);
+    await analyzeWaveform(next);
   } catch (_) {}
 }
 
@@ -676,6 +731,7 @@ async function playSong(item, shouldPlay) {
   if (previous && previous !== item) releaseItemResources(previous);
   renderSetlist();
   updatePlayer();
+  preloadTransitionMetadata(item);
 }
 
 function getNextSong() {
@@ -687,17 +743,29 @@ function initAudioGraph() {
   for (const element of [audioA, audioB]) {
     if (audioGraphs.has(element)) continue;
     const source = audioContext.createMediaElementSource(element);
+    const filter = audioContext.createBiquadFilter();
+    filter.type = element === audioA ? "highpass" : "lowpass";
+    filter.frequency.value = element === audioA ? 20 : 280;
+    filter.Q.value = element === audioA ? .5 : 2.2;
     const gain = audioContext.createGain();
     gain.gain.value = element === audioA ? 1 : 0;
-    source.connect(gain).connect(audioContext.destination);
-    audioGraphs.set(element, { gain });
+    source.connect(filter).connect(gain).connect(audioContext.destination);
+    audioGraphs.set(element, { filter, gain });
   }
   if (audioContext.state === "suspended") audioContext.resume();
 }
 
+function computeTransitionDuration(item) {
+  const duration = item?.duration || 0;
+  const base = Math.max(6, Math.min(16, duration * .06));
+  return base + (Math.random() * 3 - 1.5);
+}
+
 function abortTransition() {
   if (transition.timer) clearTimeout(transition.timer);
+  if (transition.rateTimer) clearInterval(transition.rateTimer);
   transition.timer = null;
+  transition.rateTimer = null;
   transition.active = false;
   if (audioContext) {
     const now = audioContext.currentTime;
@@ -705,11 +773,16 @@ function abortTransition() {
     const nextGraph = audioGraphs.get(audioB);
     currentGraph?.gain.gain.cancelScheduledValues(now);
     currentGraph?.gain.gain.setValueAtTime(1, now);
+    currentGraph?.filter.frequency.cancelScheduledValues(now);
+    currentGraph?.filter.frequency.setValueAtTime(20, now);
     nextGraph?.gain.gain.cancelScheduledValues(now);
     nextGraph?.gain.gain.setValueAtTime(0, now);
+    nextGraph?.filter.frequency.cancelScheduledValues(now);
+    nextGraph?.filter.frequency.setValueAtTime(280, now);
   }
   audioB.pause();
   audioB.removeAttribute("src");
+  audioA.playbackRate = 1;
 }
 
 async function startTransition() {
@@ -717,8 +790,10 @@ async function startTransition() {
   const next = getNextSong();
   if (!next) return;
   transition.active = true;
+  transition.duration = computeTransitionDuration(state.current);
   initAudioGraph();
   await loadItemMetadata(next);
+  if (!transition.active) return;
   audioB.src = ensureUrl(next);
   audioB.load();
   await new Promise((resolve) => {
@@ -727,17 +802,75 @@ async function startTransition() {
     audioB.addEventListener("error", resolve, { once: true });
   });
   if (next.startPoint !== null) audioB.currentTime = next.startPoint;
+  audioB.playbackRate = 1;
   await audioB.play().catch(() => {});
   const now = audioContext.currentTime;
-  const currentGain = audioGraphs.get(audioA).gain.gain;
-  const nextGain = audioGraphs.get(audioB).gain.gain;
+  const currentGraph = audioGraphs.get(audioA);
+  const nextGraph = audioGraphs.get(audioB);
+  const currentGain = currentGraph.gain.gain;
+  const nextGain = nextGraph.gain.gain;
+  const currentFilter = currentGraph.filter.frequency;
+  const nextFilter = nextGraph.filter.frequency;
+  const currentItem = state.current;
+  const hasLongOutro = currentItem.longOutro;
+  const hasQuickIntro = next.quickIntro;
+  const extra = hasLongOutro ? currentItem.longOutroSeconds : 0;
+  const bpmA = currentItem.manualBpm || currentItem.detectedBpm;
+  const bpmB = next.manualBpm || next.detectedBpm;
+  const bpmRateExtra = currentItem.bpmOutro && bpmA && bpmB
+    ? Math.max(.75, Math.min(1.25, bpmB / bpmA)) - 1
+    : .09;
+
+  currentGraph.filter.type = "highpass";
+  nextGraph.filter.type = "lowpass";
   currentGain.cancelScheduledValues(now);
   nextGain.cancelScheduledValues(now);
+  currentFilter.cancelScheduledValues(now);
+  nextFilter.cancelScheduledValues(now);
   currentGain.setValueAtTime(1, now);
   nextGain.setValueAtTime(0, now);
-  currentGain.linearRampToValueAtTime(0, now + transition.duration);
-  nextGain.linearRampToValueAtTime(1, now + transition.duration);
-  transition.timer = setTimeout(() => completeTransition(next), transition.duration * 1000);
+  currentFilter.setValueAtTime(20, now);
+  nextFilter.setValueAtTime(hasQuickIntro ? 20000 : 280, now);
+
+  const cut = Math.min(transition.duration, 4);
+  const outgoingEnd = hasQuickIntro
+    ? (hasLongOutro ? cut + extra : cut * .8)
+    : transition.duration + extra;
+  if (hasQuickIntro) {
+    currentFilter.exponentialRampToValueAtTime(hasLongOutro ? 400 : 300, now + cut);
+    currentFilter.exponentialRampToValueAtTime(hasLongOutro ? 3500 : 5000, now + outgoingEnd);
+    currentGain.linearRampToValueAtTime(hasLongOutro ? .38 : .18, now + cut);
+    currentGain.linearRampToValueAtTime(0, now + outgoingEnd);
+    nextGain.linearRampToValueAtTime(.45, now + .3);
+    nextGain.linearRampToValueAtTime(.85, now + 1.2);
+    nextGain.linearRampToValueAtTime(1, now + 2);
+  } else {
+    currentFilter.exponentialRampToValueAtTime(hasLongOutro ? 350 : 500, now + transition.duration * .55);
+    currentFilter.exponentialRampToValueAtTime(3500, now + outgoingEnd);
+    currentGain.linearRampToValueAtTime(hasLongOutro ? .55 : .5, now + transition.duration * .6);
+    currentGain.linearRampToValueAtTime(hasLongOutro ? .28 : 0, now + transition.duration);
+    currentGain.linearRampToValueAtTime(0, now + outgoingEnd);
+    nextFilter.exponentialRampToValueAtTime(2200, now + transition.duration * .5);
+    nextFilter.exponentialRampToValueAtTime(20000, now + transition.duration * .78);
+    nextGain.linearRampToValueAtTime(.35, now + transition.duration * .38);
+    nextGain.linearRampToValueAtTime(.75, now + transition.duration * .68);
+    nextGain.linearRampToValueAtTime(1, now + transition.duration * .9);
+  }
+
+  const rateStart = Date.now();
+  const rateDuration = (hasQuickIntro ? outgoingEnd : transition.duration + extra * .5) * 1000;
+  transition.rateTimer = setInterval(() => {
+    const elapsed = Date.now() - rateStart;
+    if (elapsed >= rateDuration || !transition.active) {
+      clearInterval(transition.rateTimer);
+      transition.rateTimer = null;
+      return;
+    }
+    audioA.playbackRate = 1 + (elapsed / rateDuration) * bpmRateExtra;
+  }, 50);
+
+  const completionMs = (hasQuickIntro ? cut : transition.duration) * 1000 + extra * 1000;
+  transition.timer = setTimeout(() => completeTransition(next), completionMs);
 }
 
 function completeTransition(next) {
@@ -745,18 +878,27 @@ function completeTransition(next) {
   const previous = state.current;
   transition.active = false;
   transition.timer = null;
+  if (transition.rateTimer) clearInterval(transition.rateTimer);
+  transition.rateTimer = null;
   const oldAudio = audioA;
   audioA = audioB;
   audioB = oldAudio;
   audioB.pause();
   audioB.removeAttribute("src");
+  audioB.playbackRate = 1;
   const currentGraph = audioGraphs.get(audioA);
   const oldGraph = audioGraphs.get(audioB);
   const now = audioContext.currentTime;
   currentGraph.gain.gain.cancelScheduledValues(now);
   currentGraph.gain.gain.setValueAtTime(1, now);
+  currentGraph.filter.type = "highpass";
+  currentGraph.filter.frequency.cancelScheduledValues(now);
+  currentGraph.filter.frequency.setValueAtTime(20, now);
   oldGraph.gain.gain.cancelScheduledValues(now);
   oldGraph.gain.gain.setValueAtTime(0, now);
+  oldGraph.filter.type = "lowpass";
+  oldGraph.filter.frequency.cancelScheduledValues(now);
+  oldGraph.filter.frequency.setValueAtTime(280, now);
   attachAudioListeners();
   state.current = next;
   state.currentIndex = state.songs.indexOf(next);
