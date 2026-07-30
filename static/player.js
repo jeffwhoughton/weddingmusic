@@ -4,6 +4,7 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
 const LOCK_PASSWORD = "1235";
+const LOCK_TIMEOUT_MS = 30_000;
 const AUDIO_EXTENSIONS = new Set([".mp3", ".m4a", ".flac", ".ogg", ".opus", ".wav", ".aac", ".webm"]);
 const ALLOWED_EMOJIS = ["💞", "✨", "🍂", "🕺", "🗑️"];
 const GROUPS = [
@@ -19,6 +20,7 @@ const state = {
   songs: [],
   current: null,
   currentIndex: -1,
+  queuedNext: null,
   started: false,
   urls: new Set(),
   locked: false,
@@ -44,6 +46,7 @@ let toastTimer;
 let driveAccessToken = null;
 let driveTokenExpiresAt = 0;
 let tokenRequest = null;
+let lockTimeout = null;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (seconds) => {
@@ -554,13 +557,19 @@ function renderSetlist() {
         html.push(`<div class="set-divider"><span class="set-divider-name">${esc(item.name)}</span><span class="set-divider-time">~${formatClockTime(elapsedSeconds)}</span></div>`);
         continue;
       }
+      const itemIndex = group.songs.indexOf(item);
       const current = state.current === item ? " current" : "";
+      const skipped = state.queuedNext && itemIndex > state.currentIndex && itemIndex < group.songs.indexOf(state.queuedNext) ? " skipped" : "";
       const art = item.artUrl || "";
       const duration = item.duration ? fmt(item.duration) : "0:00";
       const inPoint = item.startPoint === null ? 0 : Math.max(0, item.startPoint);
       const outPoint = item.transitionPoint === null ? item.duration : Math.max(inPoint, Math.min(item.duration, item.transitionPoint));
       const shortened = item.duration ? fmt(Math.max(0, outPoint - inPoint)) : "0:00";
-      html.push(`<button class="song-row${current}" data-song="${item.globalIndex}"><span class="song-number">${item.globalIndex + 1}</span><img class="song-art"${art ? ` src="${art}"` : ""} alt=""><span class="song-meta"><span class="song-name">${esc(item.name)}</span><span class="song-artist">${esc(item.artist)}</span></span><span class="song-times"><span class="song-duration">${duration}</span><span class="song-short-duration">${shortened}</span></span></button>`);
+      const queueActive = state.queuedNext === item ? " active" : "";
+      const queueButton = itemIndex > state.currentIndex
+        ? `<button class="song-queue-next${queueActive}" data-queue-song="${item.globalIndex}" title="Go here next" aria-label="Go here next">↩</button>`
+        : "";
+      html.push(`<div class="song-row${current}${skipped}" data-song="${item.globalIndex}"><span class="song-number">${item.globalIndex + 1}</span><img class="song-art"${art ? ` src="${art}"` : ""} alt=""><span class="song-meta"><span class="song-name">${esc(item.name)}</span><span class="song-artist">${esc(item.artist)}</span></span>${queueButton}<span class="song-times"><span class="song-duration">${duration}</span><span class="song-short-duration">${shortened}</span></span></div>`);
       elapsedSeconds += Math.max(0, outPoint - inPoint);
     }
   }
@@ -568,6 +577,10 @@ function renderSetlist() {
   list.innerHTML = html.join("");
   list.scrollTop = scrollTop;
   list.querySelectorAll("[data-song]").forEach((row) => row.addEventListener("click", () => playSong(group.songs[Number(row.dataset.song)], true)));
+  list.querySelectorAll("[data-queue-song]").forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setQueuedNext(group.songs[Number(button.dataset.queueSong)]);
+  }));
   updateScrollPip();
 }
 
@@ -587,6 +600,23 @@ async function preloadMetadata(group) {
     } catch (_) {}
     if (state.selectedGroup === group) renderSetlist();
   }
+}
+
+function clearQueuedNext() {
+  state.queuedNext = null;
+}
+
+function setQueuedNext(item) {
+  const itemIndex = state.songs.indexOf(item);
+  if (itemIndex <= state.currentIndex) return;
+  if (state.queuedNext === item) {
+    clearQueuedNext();
+  } else {
+    if (transition.active) abortTransition();
+    state.queuedNext = item;
+  }
+  renderSetlist();
+  updateUpNext();
 }
 
 function updateUpNext() {
@@ -831,6 +861,7 @@ async function selectGroup(id) {
   releaseItemResources(previous);
   state.selectedGroup = group;
   state.songs = group.songs;
+  clearQueuedNext();
   state.current = group.songs[0] || null;
   state.currentIndex = state.current ? 0 : -1;
   state.started = false;
@@ -848,6 +879,7 @@ async function selectGroup(id) {
 async function playSong(item, shouldPlay, respectInPoint = true) {
   if (!item) return;
   const previous = state.current;
+  clearQueuedNext();
   abortTransition();
   state.fading = false;
   state.fadePaused = null;
@@ -882,6 +914,7 @@ async function playSong(item, shouldPlay, respectInPoint = true) {
 }
 
 function getNextSong() {
+  if (state.queuedNext) return state.queuedNext;
   return state.currentIndex >= 0 ? state.songs[state.currentIndex + 1] || null : state.songs[0] || null;
 }
 
@@ -1050,6 +1083,7 @@ function completeTransition(next) {
   attachAudioListeners();
   state.current = next;
   state.currentIndex = state.songs.indexOf(next);
+  if (state.queuedNext === next) clearQueuedNext();
   releaseItemResources(previous);
   loadItemMetadata(next).then(() => analyzeWaveform(next)).catch(() => {});
   renderSetlist();
@@ -1199,12 +1233,22 @@ function shakeLockButton() {
   setTimeout(() => button.classList.remove("shake"), 350);
 }
 
+function setLocked(locked) {
+  state.locked = locked;
+  const button = $("lock-button");
+  button.textContent = locked ? "🔒" : "🔓";
+  button.setAttribute("aria-label", locked ? "Unlock screen" : "Lock screen");
+  button.classList.toggle("is-locked", locked);
+  if (lockTimeout) clearTimeout(lockTimeout);
+  lockTimeout = locked ? null : setTimeout(() => setLocked(true), LOCK_TIMEOUT_MS);
+  if (locked) enterFullscreen();
+  else exitFullscreen();
+}
+
 function unlock() {
   if ($("lock-password").value === LOCK_PASSWORD) {
-    state.locked = false;
+    setLocked(false);
     $("lock-modal").hidden = true;
-    $("lock-button").textContent = "🔒";
-    exitFullscreen();
   } else {
     $("lock-status").textContent = "Incorrect password.";
     $("lock-password").value = "";
@@ -1262,11 +1306,7 @@ $("setlist-pane").addEventListener("pointerdown", () => {
 });
 $("lock-button").addEventListener("click", () => {
   if (state.locked) showLockPrompt();
-  else {
-    state.locked = true;
-    $("lock-button").textContent = "🔓";
-    enterFullscreen();
-  }
+  else setLocked(true);
 });
 $("lock-submit").addEventListener("click", unlock);
 $("lock-password").addEventListener("keydown", (event) => { if (event.key === "Enter") unlock(); });
@@ -1287,12 +1327,20 @@ document.addEventListener("click", (event) => {
   shakeLockButton();
 }, true);
 
+document.addEventListener("pointerdown", () => {
+  if (!state.locked) setLocked(false);
+}, true);
+document.addEventListener("keydown", () => {
+  if (!state.locked) setLocked(false);
+}, true);
+
 window.addEventListener("resize", () => {
   if (state.current) { drawWaveform(state.current); updateMarkers(); }
   if (drawerState.mode !== "half") setDrawerMode(drawerState.mode);
   updateScrollPip();
 });
 setDrawerMode("half");
+setLocked(false);
 
 attachAudioListeners();
 if (navigator.mediaSession) {

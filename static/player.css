@@ -38,6 +38,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .icon-button { width: 38px; height: 38px; padding: 0; border: 1px solid var(--line); border-radius: 10px; color: var(--cream-dim); background: transparent; cursor: pointer; font-size: 24px; line-height: 1; }
 .icon-button:active { background: var(--panel); }
 .lock-button.shake { animation: lock-shake .34s ease-in-out; }
+.lock-button.is-locked { background: linear-gradient(120deg, rgba(224,111,125,.2), rgba(164,123,255,.22), rgba(224,166,78,.18)); background-size: 220% 220%; animation: lock-gradient 5s ease-in-out infinite; }
+@keyframes lock-gradient { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
 @keyframes lock-shake {
   0%, 100% { transform: translateX(0); }
   25% { transform: translateX(-5px); }
@@ -88,7 +90,7 @@ button { -webkit-tap-highlight-color: transparent; }
 @keyframes fade-ring { from { --fade-progress: 0deg; } to { --fade-progress: 360deg; } }
 .play-button-wrap.is-fading { animation: fade-ring 5s linear forwards; }
 
-.up-next-card { display: flex; align-items: center; gap: 10px; width: min(100%, 390px); min-height: 58px; margin: 24px auto 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--cream); background: rgba(56,41,31,.72); text-align: left; }
+.up-next-card { display: flex; align-items: center; gap: 10px; width: min(100%, 390px); min-height: 58px; margin: 48px auto 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--cream); background: rgba(56,41,31,.72); text-align: left; }
 .up-next-label { align-self: stretch; display: grid; place-items: center; min-width: 16px; color: var(--gold); font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; writing-mode: vertical-rl; }
 .up-next-art { width: 40px; height: 40px; flex: 0 0 40px; border-radius: 6px; object-fit: cover; background: var(--panel-light); }
 .up-next-info { min-width: 0; flex: 1; }
@@ -106,14 +108,15 @@ button { -webkit-tap-highlight-color: transparent; }
 .scroll-pip-track { position: absolute; top: 8px; right: 3px; bottom: 8px; width: 3px; border-radius: 3px; background: rgba(231,205,168,.08); pointer-events: none; }
 .scroll-pip { position: absolute; top: 0; left: -1px; width: 5px; height: 24px; border-radius: 5px; background: var(--gold); box-shadow: 0 0 8px rgba(224,166,78,.65); transform: translateY(0); }
 .current-song-pip { position: absolute; top: 0; left: -2px; width: 7px; height: 5px; border-radius: 5px; background: var(--rose); box-shadow: 0 0 7px rgba(224,111,125,.8); }
-.set-divider { display: flex; align-items: center; gap: 8px; margin: 11px 10px 5px; color: var(--gold-light); font: italic 11px Fraunces, serif; letter-spacing: .08em; text-transform: uppercase; }
-.set-divider::before { height: 1px; flex: 1; background: var(--line); content: ''; }
+.set-divider { display: flex; align-items: center; gap: 8px; margin: 11px 10px 5px; color: var(--gold-light); font: italic 11px Fraunces, serif; letter-spacing: .08em; text-align: left; text-transform: uppercase; }
+.set-divider::before { order: 1; height: 1px; flex: 1; background: var(--line); content: ''; }
 .set-divider::after { display: none; }
-.set-divider-time { color: var(--muted); font: 500 10px Hanken Grotesk, sans-serif; letter-spacing: .04em; opacity: 0; transform: translateX(8px); }
+.set-divider-time { order: 2; color: var(--muted); font: 500 10px Hanken Grotesk, sans-serif; letter-spacing: .04em; opacity: 0; transform: translateX(8px); }
 .setlist-pane.is-open .set-divider-time { animation: divider-time-in .35s ease forwards; }
 @keyframes divider-time-in { to { opacity: 1; transform: translateX(0); } }
-.song-row { display: grid; grid-template-columns: 25px 40px minmax(0,1fr) auto; align-items: center; gap: 9px; width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid transparent; border-radius: 9px; color: var(--cream); background: transparent; text-align: left; }
+.song-row { display: grid; grid-template-columns: 25px 40px minmax(0,1fr) 30px auto; align-items: center; gap: 9px; width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid transparent; border-radius: 9px; color: var(--cream); background: transparent; cursor: pointer; text-align: left; }
 .song-row.current { border-color: rgba(224,111,125,.3); background: rgba(224,111,125,.12); }
+.song-row.skipped { opacity: .32; }
 .song-number { color: var(--muted); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
 .song-art { width: 40px; height: 40px; border-radius: 7px; object-fit: cover; background: var(--panel-light); }
 .song-meta { min-width: 0; }
@@ -123,9 +126,14 @@ button { -webkit-tap-highlight-color: transparent; }
 .song-times { display: flex; flex-direction: column; align-items: flex-end; min-width: 42px; }
 .song-duration, .song-short-duration { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .song-short-duration { margin-top: 2px; color: rgba(201,184,159,.52); font-size: 9px; }
+.song-queue-next { width: 28px; height: 28px; padding: 0; border: 1px solid transparent; border-radius: 7px; color: var(--muted); background: transparent; cursor: pointer; font-size: 17px; line-height: 1; opacity: 0; transition: opacity .15s, border-color .15s, color .15s, background .15s; }
+.song-row:hover .song-queue-next, .song-queue-next:focus-visible, .song-queue-next.active { opacity: 1; }
+.song-queue-next:hover, .song-queue-next:focus-visible { border-color: var(--line); color: var(--gold-light); background: rgba(224,166,78,.1); outline: 0; }
+.song-queue-next.active { border-color: var(--gold); color: var(--gold); background: rgba(224,166,78,.14); }
 .setlist-pane.is-closed .setlist { overflow: hidden; opacity: 0; pointer-events: none; }
 .setlist-pane.is-closed { height: 29px; }
 .setlist-pane.is-open { height: 100%; }
+.player-view.drawer-closed .player-pane { justify-content: center; }
 
 .menu-drawer { position: fixed; inset: 0 auto 0 0; z-index: 20; display: flex; width: min(86vw, 340px); flex-direction: column; padding: 23px 18px; background: var(--ink-soft); box-shadow: 18px 0 40px rgba(0,0,0,.45); transform: translateX(-105%); transition: transform .25s ease; }
 .menu-drawer.open { transform: translateX(0); }
