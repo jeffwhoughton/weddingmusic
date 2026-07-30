@@ -1,5 +1,5 @@
 const GOOGLE_CLIENT_ID = "465530902895-smsu60b8qvdv83ahrbr7pi7grl5cjh8b.apps.googleusercontent.com";
-const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/17bm2EuON7WbLJw6dTDbq-0vPMHNNxMOF?alt=media&acknowledgeAbuse=true";
+const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/1epDRVHP4ENYeab_4imy577X8ZjmZjy6r?alt=media&acknowledgeAbuse=true";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
@@ -48,6 +48,7 @@ let driveTokenExpiresAt = 0;
 let tokenRequest = null;
 let lockTimeout = null;
 let artSwapToken = 0;
+let artSwapCleanup = null;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (seconds) => {
@@ -588,6 +589,19 @@ function renderSetlist() {
   updateScrollPip();
 }
 
+function updateSetlistRow(item) {
+  const row = $("setlist").querySelector(`.song-row[data-song="${item.globalIndex}"]`);
+  if (!row) return;
+  const art = row.querySelector(".song-art");
+  if (art) setImage(art, item.artUrl || "");
+  const duration = row.querySelector(".song-duration");
+  const shortened = row.querySelector(".song-short-duration");
+  const inPoint = item.startPoint === null ? 0 : Math.max(0, item.startPoint);
+  const outPoint = item.transitionPoint === null ? item.duration : Math.max(inPoint, Math.min(item.duration, item.transitionPoint));
+  if (duration) duration.textContent = item.duration ? fmt(item.duration) : "0:00";
+  if (shortened) shortened.textContent = item.duration ? fmt(Math.max(0, outPoint - inPoint)) : "0:00";
+}
+
 function formatClockTime(seconds) {
   const roundedMinutes = Math.round(Math.max(0, seconds) / 60);
   const hour = Math.floor(roundedMinutes / 60) % 12 || 12;
@@ -602,7 +616,7 @@ async function preloadMetadata(group) {
       await loadItemMetadata(item);
       await analyzeWaveform(item);
     } catch (_) {}
-    if (state.selectedGroup === group) renderSetlist();
+    if (state.selectedGroup === group) updateSetlistRow(item);
   }
 }
 
@@ -670,16 +684,20 @@ function setDrawerMode(mode) {
   updateUpNext();
 }
 
-function animatePlayerArt(item) {
+function animatePlayerArt(item, outgoingArtUrl = "", onComplete = null) {
   const current = $("player-art");
   const next = $("player-art-next");
   if (!current) return;
+  artSwapCleanup?.();
+  artSwapCleanup = null;
   if (!next || !current.parentElement) {
     setImage(current, item ? ensureArtUrl(item) : "");
+    onComplete?.();
     return;
   }
   const wrap = current.parentElement;
   const swapToken = ++artSwapToken;
+  setImage(current, outgoingArtUrl);
   setImage(next, item ? ensureArtUrl(item) : "");
   wrap.classList.remove("is-swapping");
   void wrap.offsetWidth;
@@ -693,6 +711,13 @@ function animatePlayerArt(item) {
     setImage(next, "");
     wrap.classList.remove("is-swapping");
     next.removeEventListener("animationend", onAnimationEnd);
+    artSwapCleanup = null;
+    onComplete?.();
+  };
+  artSwapCleanup = () => {
+    next.removeEventListener("animationend", onAnimationEnd);
+    wrap.classList.remove("is-swapping");
+    onComplete?.();
   };
   next.addEventListener("animationend", onAnimationEnd);
 }
@@ -764,7 +789,7 @@ async function preloadArtwork(group) {
       if (pictureTag?.data?.length) item.artBlob = new Blob([new Uint8Array(pictureTag.data)], { type: pictureTag.format || pictureTag.mime || "image/jpeg" });
       ensureArtUrl(item);
       if (state.selectedGroup === group) {
-        renderSetlist();
+        updateSetlistRow(item);
         const artWrap = $("player-art-wrap");
         if (state.current === item && !artWrap?.classList.contains("is-swapping")) setImage($("player-art"), ensureArtUrl(item));
       }
@@ -922,6 +947,7 @@ async function selectGroup(id) {
 async function playSong(item, shouldPlay, respectInPoint = true) {
   if (!item) return;
   const previous = state.current;
+  const previousArtUrl = previous && previous !== item ? ensureArtUrl(previous) : "";
   clearQueuedNext();
   abortTransition();
   state.fading = false;
@@ -951,8 +977,7 @@ async function playSong(item, shouldPlay, respectInPoint = true) {
   onAudioTimeUpdate();
   if (shouldPlay) audioA.play().catch(() => toast("Tap play to start audio."));
   if (previous && previous !== item) {
-    releaseItemResources(previous);
-    animatePlayerArt(item);
+    animatePlayerArt(item, previousArtUrl, () => releaseItemResources(previous));
   }
   renderSetlist();
   updatePlayer();
@@ -1105,6 +1130,7 @@ async function startTransition() {
 function completeTransition(next) {
   if (!transition.active) return;
   const previous = state.current;
+  const previousArtUrl = previous ? ensureArtUrl(previous) : "";
   transition.active = false;
   $("player-view").classList.remove("is-transitioning");
   transition.timer = null;
@@ -1133,8 +1159,7 @@ function completeTransition(next) {
   state.current = next;
   state.currentIndex = state.songs.indexOf(next);
   if (state.queuedNext === next) clearQueuedNext();
-  releaseItemResources(previous);
-  animatePlayerArt(next);
+  animatePlayerArt(next, previousArtUrl, () => releaseItemResources(previous));
   loadItemMetadata(next).then(() => analyzeWaveform(next)).catch(() => {});
   renderSetlist();
   updatePlayer();

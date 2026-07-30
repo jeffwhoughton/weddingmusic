@@ -125,6 +125,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .set-divider-time { order: 2; width: 0; overflow: hidden; color: var(--muted); font: 500 10px Hanken Grotesk, sans-serif; letter-spacing: .04em; opacity: 0; white-space: nowrap; transition: width .25s ease, opacity .25s ease; }
 .setlist-pane.is-open .set-divider-time { width: 38px; opacity: 1; }
 .song-row { display: grid; grid-template-columns: 25px 40px minmax(0,1fr) 28px auto; align-items: center; gap: 9px; width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid transparent; border-radius: 9px; color: var(--cream); background: transparent; cursor: pointer; text-align: left; }
+.song-queue-next + .song-times { margin-left: -9px; }
 .song-row.current { border-color: rgba(224,111,125,.3); background: rgba(224,111,125,.12); }
 .song-row.skipped { opacity: .32; }
 .song-number { color: var(--muted); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
