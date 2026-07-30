@@ -1453,7 +1453,6 @@ function setLocked(locked) {
   if (locked) state.lockEngaged = true;
   state.locked = locked;
   const button = $("lock-button");
-  button.textContent = locked ? "🔒" : "🔓";
   button.setAttribute("aria-label", locked ? "Unlock screen" : "Lock screen");
   button.classList.toggle("is-locked", locked);
   if (lockTimeout) clearTimeout(lockTimeout);
