@@ -1,4 +1,12 @@
 - Make it so if the app is in expanded mode, and is unlocked for more than 30 seconds, it becomes locked.
+
 - Volume balancing
-- Add Alex Here:
-https://console.cloud.google.com/auth/audience?project=gen-lang-client-0671096340
+- Retitle sections of the playlists
+
+- For player, make the playlist section a collapsible drawer (that can be open and closed even when lock is enabled). Perhaps when opened all the way we get timestamps.
+- For player, make the numbers not reset as we move to reception 2, reception 3, etc.
+- For player, the lock emoji doesn't change when locking / unlocking. Also make it so when locked, there's a subtle animation in the background. When locked the lock should be closed, when unlocked open.
+
+- When drawer collapsed, have a "next up" button
+- Add animations so it's clear what's moving where (such as when the next song comes in or when pausing and it jumping to the next song)
+- add quick buttons for Jacob to do things like go to first dance

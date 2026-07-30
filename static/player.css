@@ -55,8 +55,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .picker-button span { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
 .picker-button b { color: var(--gold); font-size: 22px; font-weight: 400; }
 
-.player-view { display: flex; flex: 1; flex-direction: column; min-height: 0; }
-.player-pane { flex: 0 0 53%; min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 18px 24px 14px; overflow: hidden; text-align: center; }
+.player-view { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.player-pane { width: 100%; height: 100%; min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 18px 24px 14px; overflow: hidden; text-align: center; }
 .player-art-wrap { width: clamp(0px, min(46vw, 180px, calc(100svh - 360px)), 180px); height: clamp(0px, min(46vw, 180px, calc(100svh - 360px)), 180px); min-width: 0; min-height: 0; flex: 0 1 auto; aspect-ratio: 1; margin: 0 auto 12px; }
 .player-art { width: 100%; height: 100%; display: block; border-radius: 16px; object-fit: cover; background: linear-gradient(135deg, #76523b, #30221a 70%); box-shadow: 0 20px 50px -20px #000; }
 .player-art.placeholder { display: grid; place-items: center; color: var(--gold-light); font-size: 50px; }
@@ -88,8 +88,20 @@ button { -webkit-tap-highlight-color: transparent; }
 @keyframes fade-ring { from { --fade-progress: 0deg; } to { --fade-progress: 360deg; } }
 .play-button-wrap.is-fading { animation: fade-ring 5s linear forwards; }
 
-.setlist-pane { position: relative; flex: 1 1 40%; min-height: 0; border-top: 1px solid var(--line); }
-.setlist { position: relative; width: min(100%, 570px); height: 100%; margin: 0 auto; overflow-x: hidden; overflow-y: scroll; padding: 0 18px 30px 0; overscroll-behavior: contain; scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
+.up-next-card { display: none; align-items: center; gap: 10px; width: min(100%, 390px); min-height: 58px; margin: 16px auto 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--cream); background: rgba(56,41,31,.72); cursor: pointer; text-align: left; }
+.up-next-label { align-self: flex-start; min-width: 40px; color: var(--gold); font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.up-next-art { width: 40px; height: 40px; flex: 0 0 40px; border-radius: 6px; object-fit: cover; background: var(--panel-light); }
+.up-next-info { min-width: 0; flex: 1; }
+.up-next-info strong, .up-next-info span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.up-next-info strong { font-size: 12px; font-weight: 600; }
+.up-next-info span { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.up-next-arrow { color: var(--gold); font-size: 22px; font-weight: 400; }
+.setlist-pane { position: absolute; right: 0; bottom: 0; left: 0; z-index: 5; height: var(--drawer-height, 47%); min-height: 0; border-top: 1px solid var(--line); background: rgba(27,20,16,.98); box-shadow: 0 -14px 36px rgba(0,0,0,.25); transition: height .28s cubic-bezier(.2,.8,.2,1); }
+.setlist-pane.is-dragging { transition: none; }
+.setlist-handle { position: absolute; top: 0; left: 50%; z-index: 3; display: grid; place-items: center; width: 100px; height: 29px; padding: 0; border: 0; transform: translate(-50%, -1px); color: var(--muted); background: transparent; cursor: grab; touch-action: none; }
+.setlist-handle span { display: block; width: 42px; height: 4px; border-radius: 4px; background: var(--cream-dim); opacity: .7; }
+.setlist-handle:active { cursor: grabbing; }
+.setlist { position: relative; width: min(100%, 570px); height: 100%; margin: 0 auto; overflow-x: hidden; overflow-y: scroll; padding: 29px 18px 30px 0; overscroll-behavior: contain; scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
 .setlist::-webkit-scrollbar { width: 9px; }
 .setlist::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 5px; background: var(--line); background-clip: padding-box; cursor: grab; }
 .scroll-pip-track { position: absolute; top: 8px; right: 3px; bottom: 8px; width: 3px; border-radius: 3px; background: rgba(231,205,168,.08); pointer-events: none; }
@@ -107,7 +119,13 @@ button { -webkit-tap-highlight-color: transparent; }
 .song-name, .song-artist { overflow: hidden; text-overflow: ellipsis; }
 .song-name { display: -webkit-box; color: var(--cream); font-size: 13px; font-weight: 600; line-height: 1.25; line-clamp: 2; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .song-artist { margin-top: 2px; color: var(--muted); font-size: 11px; }
-.song-duration { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.song-times { display: flex; flex-direction: column; align-items: flex-end; min-width: 42px; }
+.song-duration, .song-short-duration { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.song-short-duration { margin-top: 2px; color: rgba(201,184,159,.52); font-size: 9px; }
+.setlist-pane.is-closed .setlist { overflow: hidden; opacity: 0; pointer-events: none; }
+.setlist-pane.is-closed { height: 29px; }
+.setlist-pane.is-open { height: 100%; }
+.player-view.drawer-closed .up-next-card { display: flex; }
 
 .menu-drawer { position: fixed; inset: 0 auto 0 0; z-index: 20; display: flex; width: min(86vw, 340px); flex-direction: column; padding: 23px 18px; background: var(--ink-soft); box-shadow: 18px 0 40px rgba(0,0,0,.45); transform: translateX(-105%); transition: transform .25s ease; }
 .menu-drawer.open { transform: translateX(0); }
@@ -138,7 +156,7 @@ button { -webkit-tap-highlight-color: transparent; }
 
 @media (min-width: 700px) { .app-shell { border-right: 1px solid var(--line); border-left: 1px solid var(--line); } }
 @media (max-height: 700px) {
-  .player-pane { flex-basis: 53%; padding-top: 10px; }
+  .player-pane { padding-top: 10px; }
   .player-art-wrap { width: clamp(0px, min(38vw, 170px, calc(100svh - 330px)), 170px); height: clamp(0px, min(38vw, 170px, calc(100svh - 330px)), 170px); margin-bottom: 9px; }
   .scrub { margin-top: 11px; }
   .transport { margin-top: 0; }

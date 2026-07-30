@@ -26,6 +26,14 @@ const state = {
   resumeFadeIn: false,
 };
 
+const drawerState = {
+  mode: "half",
+  pointerId: null,
+  startY: 0,
+  startHeight: 0,
+  closeTimer: null,
+};
+
 let audioA = document.getElementById("audio-a");
 let audioB = document.getElementById("audio-b");
 let audioContext = null;
@@ -547,13 +555,96 @@ function renderSetlist() {
       }
       const current = state.current === item ? " current" : "";
       const art = item.artUrl || "";
-      html.push(`<button class="song-row${current}" data-song="${item.globalIndex}"><span class="song-number">${esc(item.position)}</span><img class="song-art"${art ? ` src="${art}"` : ""} alt=""><span class="song-meta"><span class="song-name">${esc(item.name)}</span><span class="song-artist">${esc(item.artist)}</span></span><span class="song-duration">${item.duration ? fmt(item.duration) : ""}</span></button>`);
+      const duration = item.duration ? fmt(item.duration) : "0:00";
+      const inPoint = item.startPoint === null ? 0 : Math.max(0, item.startPoint);
+      const outPoint = item.transitionPoint === null ? item.duration : Math.max(inPoint, Math.min(item.duration, item.transitionPoint));
+      const shortened = item.duration ? fmt(Math.max(0, outPoint - inPoint)) : "0:00";
+      html.push(`<button class="song-row${current}" data-song="${item.globalIndex}"><span class="song-number">${item.globalIndex + 1}</span><img class="song-art"${art ? ` src="${art}"` : ""} alt=""><span class="song-meta"><span class="song-name">${esc(item.name)}</span><span class="song-artist">${esc(item.artist)}</span></span><span class="song-times"><span class="song-duration">${duration}</span><span class="song-short-duration">${shortened}</span></span></button>`);
     }
   }
   list.innerHTML = html.join("");
   list.scrollTop = scrollTop;
   list.querySelectorAll("[data-song]").forEach((row) => row.addEventListener("click", () => playSong(group.songs[Number(row.dataset.song)], true)));
   updateScrollPip();
+}
+
+async function preloadMetadata(group) {
+  for (const item of group.songs) {
+    try {
+      await loadItemMetadata(item);
+      await analyzeWaveform(item);
+    } catch (_) {}
+    if (state.selectedGroup === group) renderSetlist();
+  }
+}
+
+function updateUpNext() {
+  const next = getNextSong();
+  const art = $("up-next-art");
+  $("up-next-title").textContent = next?.name || "End of set";
+  $("up-next-artist").textContent = next?.artist || "No more tracks queued";
+  setImage(art, next ? ensureArtUrl(next) : "");
+  $("up-next-card").disabled = !next;
+}
+
+function drawerHeightFor(mode) {
+  const height = $("player-view").clientHeight;
+  if (mode === "closed") return 29;
+  if (mode === "open") return height;
+  return Math.round(height * .47);
+}
+
+function clearDrawerCloseTimer() {
+  if (drawerState.closeTimer) clearTimeout(drawerState.closeTimer);
+  drawerState.closeTimer = null;
+}
+
+function scheduleDrawerClose() {
+  clearDrawerCloseTimer();
+  if (drawerState.mode === "open") drawerState.closeTimer = setTimeout(() => setDrawerMode("half"), 30000);
+}
+
+function setDrawerMode(mode) {
+  drawerState.mode = mode;
+  const pane = $("setlist-pane");
+  pane.classList.remove("is-closed", "is-open", "is-dragging");
+  if (mode !== "half") pane.classList.add(`is-${mode}`);
+  pane.style.removeProperty("height");
+  $("player-view").classList.toggle("drawer-closed", mode === "closed");
+  $("setlist-handle").setAttribute("aria-expanded", String(mode === "open"));
+  if (mode === "open") scheduleDrawerClose();
+  else clearDrawerCloseTimer();
+  updateUpNext();
+}
+
+function onDrawerPointerMove(event) {
+  if (event.pointerId !== drawerState.pointerId) return;
+  const pane = $("setlist-pane");
+  const height = $("player-view").clientHeight;
+  const nextHeight = Math.max(29, Math.min(height, drawerState.startHeight + drawerState.startY - event.clientY));
+  pane.style.height = `${nextHeight}px`;
+}
+
+function onDrawerPointerUp(event) {
+  if (event.pointerId !== drawerState.pointerId) return;
+  const pane = $("setlist-pane");
+  const currentHeight = pane.getBoundingClientRect().height;
+  const modes = ["closed", "half", "open"];
+  const mode = modes.reduce((closest, candidate) => Math.abs(drawerHeightFor(candidate) - currentHeight) < Math.abs(drawerHeightFor(closest) - currentHeight) ? candidate : closest, "half");
+  drawerState.pointerId = null;
+  pane.releasePointerCapture?.(event.pointerId);
+  setDrawerMode(mode);
+}
+
+function onDrawerPointerDown(event) {
+  if (event.button !== undefined && event.button !== 0) return;
+  clearDrawerCloseTimer();
+  const pane = $("setlist-pane");
+  drawerState.pointerId = event.pointerId;
+  drawerState.startY = event.clientY;
+  drawerState.startHeight = pane.getBoundingClientRect().height;
+  pane.classList.add("is-dragging");
+  pane.setPointerCapture?.(event.pointerId);
 }
 
 function scrollToCurrentSong() {
@@ -629,6 +720,7 @@ function updatePlayer() {
   updateMediaSession();
   updatePlayButton();
   updateNextTrackLabel();
+  updateUpNext();
   updateMarkers();
   if (item) {
     drawWaveform(item);
@@ -740,6 +832,7 @@ async function selectGroup(id) {
   updatePlayer();
   selectInitialSong(state.current);
   preloadArtwork(group);
+  preloadMetadata(group);
 }
 
 async function playSong(item, shouldPlay, respectInPoint = true) {
@@ -1150,6 +1243,17 @@ $('play-button').addEventListener("click", handleTransport);
 $("resume-button").addEventListener("click", goBackToPaused);
 $("scrub-track").addEventListener("click", onScrubClick);
 $("setlist").addEventListener("scroll", updateScrollPip, { passive: true });
+$("setlist-handle").addEventListener("pointerdown", onDrawerPointerDown);
+$("setlist-pane").addEventListener("pointermove", onDrawerPointerMove);
+$("setlist-pane").addEventListener("pointerup", onDrawerPointerUp);
+$("setlist-pane").addEventListener("pointercancel", onDrawerPointerUp);
+$("setlist-pane").addEventListener("pointerdown", () => {
+  if (drawerState.mode === "open") scheduleDrawerClose();
+});
+$("up-next-card").addEventListener("click", () => {
+  const next = getNextSong();
+  if (next) playSong(next, true);
+});
 $("lock-button").addEventListener("click", () => {
   if (state.locked) showLockPrompt();
   else {
@@ -1179,8 +1283,10 @@ document.addEventListener("click", (event) => {
 
 window.addEventListener("resize", () => {
   if (state.current) { drawWaveform(state.current); updateMarkers(); }
+  if (drawerState.mode !== "half") setDrawerMode(drawerState.mode);
   updateScrollPip();
 });
+setDrawerMode("half");
 
 attachAudioListeners();
 if (navigator.mediaSession) {
