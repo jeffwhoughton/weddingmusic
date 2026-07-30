@@ -1,5 +1,5 @@
 const GOOGLE_CLIENT_ID = "465530902895-smsu60b8qvdv83ahrbr7pi7grl5cjh8b.apps.googleusercontent.com";
-const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/1lUa77Q3JTy3-lEzIn7yGs_vgllm9iKEA?alt=media&acknowledgeAbuse=true";
+const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/17bm2EuON7WbLJw6dTDbq-0vPMHNNxMOF?alt=media&acknowledgeAbuse=true";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
@@ -552,9 +552,12 @@ function renderSetlist() {
   const html = [];
   let elapsedSeconds = (GROUP_START_MINUTES[group.id] || 0) * 60;
   for (const section of group.sections) {
-    for (const item of section.items) {
+    for (const [sectionIndex, item] of section.items.entries()) {
       if (item.type === "divider") {
-        html.push(`<div class="set-divider"><span class="set-divider-name">${esc(item.name)}</span><span class="set-divider-time">~${formatClockTime(elapsedSeconds)}</span></div>`);
+        const nextSong = section.items.slice(sectionIndex + 1).find((candidate) => candidate.type === "song");
+        const nextSongIndex = nextSong ? group.songs.indexOf(nextSong) : -1;
+        const skipped = state.queuedNext && nextSongIndex > state.currentIndex && nextSongIndex < group.songs.indexOf(state.queuedNext) ? " skipped" : "";
+        html.push(`<div class="set-divider${skipped}"><span class="set-divider-name">${esc(item.name)}</span><span class="set-divider-time">~${formatClockTime(elapsedSeconds)}</span></div>`);
         continue;
       }
       const itemIndex = group.songs.indexOf(item);
@@ -652,8 +655,13 @@ function setDrawerMode(mode) {
   pane.style.removeProperty("height");
   $("player-view").classList.toggle("drawer-closed", mode === "closed");
   const basePadding = window.matchMedia("(max-height: 700px)").matches ? 10 : 14;
-  const centeredPadding = Math.max(basePadding, (pane.clientHeight - pane.scrollHeight + pane.clientHeight) / 2);
-  pane.style.setProperty("--player-top-padding", `${mode === "closed" ? centeredPadding : basePadding}px`);
+  const playerPane = $("player-pane");
+  const contentHeight = playerPane ? [...playerPane.children].reduce((total, child) => {
+    const style = getComputedStyle(child);
+    return total + child.getBoundingClientRect().height + parseFloat(style.marginTop) + parseFloat(style.marginBottom);
+  }, 0) : 0;
+  const centeredPadding = Math.max(basePadding, (playerPane.clientHeight - contentHeight - 14) / 2);
+  playerPane?.style.setProperty("--player-top-padding", `${mode === "closed" ? centeredPadding : basePadding}px`);
   $("setlist-handle").setAttribute("aria-expanded", String(mode === "open"));
   if (mode === "open") scheduleDrawerClose();
   else clearDrawerCloseTimer();
