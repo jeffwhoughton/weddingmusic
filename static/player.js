@@ -11,6 +11,7 @@ const GROUPS = [
   { id: "dinner", name: "Cocktails / Dinner", folders: ["Cocktails + Din"], note: "Cocktails + Dinner" },
   { id: "wedding", name: "Wedding Reception", folders: ["Wedding Reception", "Reception 2", "Reception 3", "End The Night"], note: "Wedding Reception through End The Night" },
 ];
+const GROUP_START_MINUTES = { pizza: 17 * 60, dinner: 16 * 60 + 30, wedding: 19 * 60 + 30 };
 
 const state = {
   groups: [],
@@ -546,11 +547,11 @@ function renderSetlist() {
   const list = $("setlist");
   const scrollTop = list.scrollTop;
   const html = [];
+  let elapsedSeconds = (GROUP_START_MINUTES[group.id] || 0) * 60;
   for (const section of group.sections) {
-    html.push(`<div class="set-section">${esc(section.name)}</div>`);
     for (const item of section.items) {
       if (item.type === "divider") {
-        html.push(`<div class="set-divider">${esc(item.name)}</div>`);
+        html.push(`<div class="set-divider"><span class="set-divider-name">${esc(item.name)}</span><span class="set-divider-time">~${formatClockTime(elapsedSeconds)}</span></div>`);
         continue;
       }
       const current = state.current === item ? " current" : "";
@@ -560,12 +561,22 @@ function renderSetlist() {
       const outPoint = item.transitionPoint === null ? item.duration : Math.max(inPoint, Math.min(item.duration, item.transitionPoint));
       const shortened = item.duration ? fmt(Math.max(0, outPoint - inPoint)) : "0:00";
       html.push(`<button class="song-row${current}" data-song="${item.globalIndex}"><span class="song-number">${item.globalIndex + 1}</span><img class="song-art"${art ? ` src="${art}"` : ""} alt=""><span class="song-meta"><span class="song-name">${esc(item.name)}</span><span class="song-artist">${esc(item.artist)}</span></span><span class="song-times"><span class="song-duration">${duration}</span><span class="song-short-duration">${shortened}</span></span></button>`);
+      elapsedSeconds += Math.max(0, outPoint - inPoint);
     }
   }
+
   list.innerHTML = html.join("");
   list.scrollTop = scrollTop;
   list.querySelectorAll("[data-song]").forEach((row) => row.addEventListener("click", () => playSong(group.songs[Number(row.dataset.song)], true)));
   updateScrollPip();
+}
+
+function formatClockTime(seconds) {
+  const roundedMinutes = Math.round(Math.max(0, seconds) / 60);
+  const hour = Math.floor(roundedMinutes / 60) % 12 || 12;
+  const minute = String(roundedMinutes % 60).padStart(2, "0");
+  const meridiem = Math.floor(roundedMinutes / 60) % 24 >= 12 ? "pm" : "am";
+  return `${hour}:${minute}${meridiem}`;
 }
 
 async function preloadMetadata(group) {
@@ -584,7 +595,6 @@ function updateUpNext() {
   $("up-next-title").textContent = next?.name || "End of set";
   $("up-next-artist").textContent = next?.artist || "No more tracks queued";
   setImage(art, next ? ensureArtUrl(next) : "");
-  $("up-next-card").disabled = !next;
 }
 
 function drawerHeightFor(mode) {
@@ -1249,10 +1259,6 @@ $("setlist-pane").addEventListener("pointerup", onDrawerPointerUp);
 $("setlist-pane").addEventListener("pointercancel", onDrawerPointerUp);
 $("setlist-pane").addEventListener("pointerdown", () => {
   if (drawerState.mode === "open") scheduleDrawerClose();
-});
-$("up-next-card").addEventListener("click", () => {
-  const next = getNextSong();
-  if (next) playSong(next, true);
 });
 $("lock-button").addEventListener("click", () => {
   if (state.locked) showLockPrompt();
