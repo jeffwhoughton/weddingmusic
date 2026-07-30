@@ -117,7 +117,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .setlist { position: relative; width: min(100%, 570px); height: 100%; margin: 0 auto; overflow-x: hidden; overflow-y: scroll; padding: 29px 18px 30px 0; overscroll-behavior: contain; scrollbar-color: var(--line) transparent; scrollbar-width: thin; }
 .setlist::-webkit-scrollbar { width: 9px; }
 .setlist::-webkit-scrollbar-thumb { border: 2px solid transparent; border-radius: 5px; background: var(--line); background-clip: padding-box; cursor: grab; }
-.scroll-pip-track { position: absolute; top: 8px; right: 3px; bottom: 8px; width: 3px; border-radius: 3px; background: rgba(231,205,168,.08); pointer-events: none; }
+.scroll-pip-track { position: absolute; top: 8px; right: 3px; bottom: 8px; width: 3px; border-radius: 3px; background: rgba(231,205,168,.08); opacity: 1; pointer-events: none; transition: opacity .22s ease; }
 .scroll-pip { position: absolute; top: 0; left: -1px; width: 5px; height: 24px; border-radius: 5px; background: var(--gold); box-shadow: 0 0 8px rgba(224,166,78,.65); transform: translateY(0); }
 .current-song-pip { position: absolute; top: 0; left: -2px; width: 7px; height: 5px; border-radius: 5px; background: var(--rose); box-shadow: 0 0 7px rgba(224,111,125,.8); }
 .set-divider { display: flex; align-items: center; gap: 8px; margin: 11px 10px 5px; color: var(--gold-light); font: italic 11px Fraunces, serif; letter-spacing: .08em; text-align: left; text-transform: uppercase; transition: opacity .22s ease; }
@@ -143,6 +143,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .song-queue-next:hover, .song-queue-next:focus-visible { border-color: var(--line); color: var(--gold-light); background: rgba(224,166,78,.1); outline: 0; }
 .song-queue-next.active { border-color: var(--gold); color: var(--gold); background: rgba(224,166,78,.14); }
 .setlist-pane.is-closed .setlist { overflow: hidden; pointer-events: none; }
+.setlist-pane.is-closed .scroll-pip-track { opacity: 0; }
 .setlist-pane.is-closed { height: 29px; }
 .setlist-pane.is-open { height: 100%; }
 .player-view.drawer-closed .player-pane { justify-content: flex-start; }

@@ -510,14 +510,25 @@ function getDisplayedArtUrl() {
   return image?.getAttribute("src") || "";
 }
 
+function getShortenedDuration(item) {
+  if (!item.duration) return 0;
+  const inPoint = item.startPoint === null ? 0 : Math.max(0, item.startPoint);
+  const outPoint = item.transitionPoint === null ? item.duration : Math.max(inPoint, Math.min(item.duration, item.transitionPoint));
+  return Math.max(0, outPoint - inPoint);
+}
+
+function getGroupShortenedDuration(group) {
+  return group.songs.reduce((total, item) => total + getShortenedDuration(item), 0);
+}
+
 function renderPicker() {
-  const renderButton = (group) => `<button class="picker-button" data-group="${group.id}"><span><strong>${esc(group.name)}</strong><span>${esc(group.note)}</span></span><b>›</b></button>`;
+  const renderButton = (group) => `<button class="picker-button" data-group="${group.id}"><span><strong>${esc(group.name)}</strong><span>${fmt(getGroupShortenedDuration(group))} total</span></span><b>›</b></button>`;
   $("picker-list").innerHTML = state.groups.map(renderButton).join("");
   $("picker-list").querySelectorAll("[data-group]").forEach((button) => button.addEventListener("click", () => selectGroup(button.dataset.group)));
 }
 
 function renderDrawer() {
-  $("drawer-playlists").innerHTML = state.groups.map((group) => `<button class="drawer-playlist${state.selectedGroup?.id === group.id ? " active" : ""}" data-group="${group.id}"><strong>${esc(group.name)}</strong><span>${esc(group.note)}</span></button>`).join("");
+  $("drawer-playlists").innerHTML = state.groups.map((group) => `<button class="drawer-playlist${state.selectedGroup?.id === group.id ? " active" : ""}" data-group="${group.id}"><strong>${esc(group.name)}</strong><span>${fmt(getGroupShortenedDuration(group))} total</span></button>`).join("");
   $("drawer-playlists").querySelectorAll("[data-group]").forEach((button) => button.addEventListener("click", () => {
     selectGroup(button.dataset.group);
     closeDrawer();
@@ -595,6 +606,16 @@ async function preloadMetadata(group) {
       await analyzeWaveform(item);
     } catch (_) {}
     if (state.selectedGroup === group) updateSetlistRow(item);
+    renderPicker();
+    renderDrawer();
+  }
+}
+
+async function preloadGroupDurations(group) {
+  for (const item of group.songs) {
+    try { await loadItemMetadata(item); } catch (_) {}
+    renderPicker();
+    renderDrawer();
   }
 }
 
@@ -1386,6 +1407,7 @@ async function bootstrap(allowDownload = false) {
     $("download-retry").hidden = true;
     $("download-screen").style.display = "none";
     $("app-shell").hidden = false;
+    state.groups.forEach((group) => preloadGroupDurations(group));
   } catch (error) {
     setDownloadStatus(error.message || "Could not load the playlist archive.");
     $("download-progress").style.width = "0";
