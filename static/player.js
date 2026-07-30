@@ -651,10 +651,28 @@ function setDrawerMode(mode) {
   if (mode !== "half") pane.classList.add(`is-${mode}`);
   pane.style.removeProperty("height");
   $("player-view").classList.toggle("drawer-closed", mode === "closed");
+  const basePadding = window.matchMedia("(max-height: 700px)").matches ? 10 : 14;
+  const centeredPadding = Math.max(basePadding, (pane.clientHeight - pane.scrollHeight + pane.clientHeight) / 2);
+  pane.style.setProperty("--player-top-padding", `${mode === "closed" ? centeredPadding : basePadding}px`);
   $("setlist-handle").setAttribute("aria-expanded", String(mode === "open"));
   if (mode === "open") scheduleDrawerClose();
   else clearDrawerCloseTimer();
   updateUpNext();
+}
+
+function animatePlayerArt(item) {
+  const current = $("player-art");
+  const next = $("player-art-next");
+  const wrap = current.parentElement;
+  setImage(next, item ? ensureArtUrl(item) : "");
+  wrap.classList.remove("is-swapping");
+  void wrap.offsetWidth;
+  wrap.classList.add("is-swapping");
+  wrap.addEventListener("animationend", () => {
+    setImage(current, item ? ensureArtUrl(item) : "");
+    setImage(next, "");
+    wrap.classList.remove("is-swapping");
+  }, { once: true });
 }
 
 function onDrawerPointerMove(event) {
@@ -756,7 +774,7 @@ function updatePlayer() {
   $("header-playlist").textContent = state.selectedGroup?.name || "Choose a set";
   $("player-title").textContent = item?.name || "Ready when you are";
   $("player-artist").textContent = item?.artist || "Select a song below to begin";
-  setImage($("player-art"), item ? ensureArtUrl(item) : "");
+  if (!$('player-art-wrap').classList.contains("is-swapping")) setImage($("player-art"), item ? ensureArtUrl(item) : "");
   updateMediaSession();
   updatePlayButton();
   updateNextTrackLabel();
@@ -907,7 +925,10 @@ async function playSong(item, shouldPlay, respectInPoint = true) {
   else if (state.current === item) audioA.currentTime = 0;
   onAudioTimeUpdate();
   if (shouldPlay) audioA.play().catch(() => toast("Tap play to start audio."));
-  if (previous && previous !== item) releaseItemResources(previous);
+  if (previous && previous !== item) {
+    releaseItemResources(previous);
+    animatePlayerArt(item);
+  }
   renderSetlist();
   updatePlayer();
   preloadTransitionMetadata(item);
@@ -947,6 +968,7 @@ function abortTransition() {
   transition.timer = null;
   transition.rateTimer = null;
   transition.active = false;
+  $("player-view").classList.remove("is-transitioning");
   if (audioContext) {
     const now = audioContext.currentTime;
     const currentGraph = audioGraphs.get(audioA);
@@ -970,6 +992,7 @@ async function startTransition() {
   const next = getNextSong();
   if (!next) return;
   transition.active = true;
+  $("player-view").classList.add("is-transitioning");
   transition.duration = computeTransitionDuration(state.current);
   initAudioGraph();
   await loadItemMetadata(next);
@@ -1058,6 +1081,7 @@ function completeTransition(next) {
   if (!transition.active) return;
   const previous = state.current;
   transition.active = false;
+  $("player-view").classList.remove("is-transitioning");
   transition.timer = null;
   if (transition.rateTimer) clearInterval(transition.rateTimer);
   transition.rateTimer = null;
@@ -1085,6 +1109,7 @@ function completeTransition(next) {
   state.currentIndex = state.songs.indexOf(next);
   if (state.queuedNext === next) clearQueuedNext();
   releaseItemResources(previous);
+  animatePlayerArt(next);
   loadItemMetadata(next).then(() => analyzeWaveform(next)).catch(() => {});
   renderSetlist();
   updatePlayer();
@@ -1320,14 +1345,24 @@ $("confirm-clear").addEventListener("click", clearCache);
 $("google-signin-button").addEventListener("click", () => bootstrap(true));
 $("download-retry").addEventListener("click", () => bootstrap(true));
 
+function isLockAllowedTarget(target) {
+  return target.closest?.("[data-lock-allowed]") || target.closest?.("#lock-modal");
+}
+
 document.addEventListener("click", (event) => {
-  if (!state.locked || event.target.closest("[data-lock-allowed]") || event.target.closest("#lock-modal")) return;
+  if (!state.locked || isLockAllowedTarget(event.target)) return;
   event.preventDefault();
   event.stopImmediatePropagation();
   shakeLockButton();
 }, true);
 
-document.addEventListener("pointerdown", () => {
+document.addEventListener("pointerdown", (event) => {
+  if (state.locked && !isLockAllowedTarget(event.target)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    shakeLockButton();
+    return;
+  }
   if (!state.locked) setLocked(false);
 }, true);
 document.addEventListener("keydown", () => {
