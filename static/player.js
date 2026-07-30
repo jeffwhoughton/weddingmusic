@@ -706,6 +706,7 @@ function setDrawerMode(mode) {
   const pane = $("setlist-pane");
   pane.classList.remove("is-closed", "is-open", "is-dragging");
   if (mode !== "half") pane.classList.add(`is-${mode}`);
+  pane.classList.toggle("is-content-veiled", mode === "closed");
   pane.style.removeProperty("height");
   $("player-view").classList.toggle("drawer-closed", mode === "closed");
   const basePadding = window.matchMedia("(max-height: 700px)").matches ? 10 : 14;
@@ -720,6 +721,10 @@ function setDrawerMode(mode) {
   if (mode === "open" || mode === "half") scheduleDrawerClose();
   else clearDrawerCloseTimer();
   updateUpNext();
+}
+
+function updateDrawerContentVeil(height) {
+  $("setlist-pane").classList.toggle("is-content-veiled", height <= 64);
 }
 
 function animatePlayerArt(item, outgoingArtUrl = "", onComplete = null) {
@@ -765,6 +770,8 @@ function onDrawerPointerMove(event) {
   const height = $("player-view").clientHeight;
   const nextHeight = Math.max(29, Math.min(height, drawerState.startHeight + drawerState.startY - event.clientY));
   pane.style.height = `${nextHeight}px`;
+  if (event.clientY < drawerState.startY - 3) pane.classList.remove("is-content-veiled");
+  else updateDrawerContentVeil(nextHeight);
 }
 
 function onDrawerPointerUp(event) {
@@ -786,6 +793,7 @@ function onDrawerPointerDown(event) {
   drawerState.startY = event.clientY;
   drawerState.startHeight = pane.getBoundingClientRect().height;
   pane.classList.add("is-dragging");
+  pane.classList.remove("is-content-veiled");
   pane.setPointerCapture?.(event.pointerId);
 }
 
@@ -931,7 +939,7 @@ function updateMarkers() {
     transitionMarker.style.display = "block";
     transitionMarker.style.left = `${Math.max(0, Math.min(100, item.transitionPoint / duration * 100))}%`;
   } else transitionMarker.style.display = "none";
-  if (item.startPoint !== null) {
+  if (item.startPoint !== null && item.startPoint / duration >= .05) {
     startMarker.style.display = "block";
     startMarker.style.left = `${Math.max(0, Math.min(100, item.startPoint / duration * 100))}%`;
   } else startMarker.style.display = "none";
