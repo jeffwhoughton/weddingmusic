@@ -691,40 +691,39 @@ function setDrawerMode(mode) {
 
 function animatePlayerArt(item, outgoingArtUrl = "", onComplete = null) {
   const current = $("player-art");
-  const next = $("player-art-next");
+  const outgoing = $("player-art-next");
   if (!current) return;
   artSwapCleanup?.();
   artSwapCleanup = null;
-  if (!next || !current.parentElement) {
+  if (!outgoing || !current.parentElement) {
     setImage(current, item ? ensureArtUrl(item) : "");
     onComplete?.();
     return;
   }
   const wrap = current.parentElement;
   const swapToken = ++artSwapToken;
-  setImage(current, outgoingArtUrl);
-  setImage(next, item ? ensureArtUrl(item) : "");
+  setImage(outgoing, outgoingArtUrl);
+  setImage(current, item ? ensureArtUrl(item) : "");
   wrap.classList.remove("is-swapping");
   void wrap.offsetWidth;
   wrap.classList.add("is-swapping");
   const onAnimationEnd = (event) => {
-    if (event.animationName !== "art-slide-in" || swapToken !== artSwapToken) {
-      if (swapToken !== artSwapToken) next.removeEventListener("animationend", onAnimationEnd);
+    if (event.animationName !== "art-slide-out" || swapToken !== artSwapToken) {
+      if (swapToken !== artSwapToken) outgoing.removeEventListener("animationend", onAnimationEnd);
       return;
     }
-    setImage(current, item ? ensureArtUrl(item) : "");
-    setImage(next, "");
+    setImage(outgoing, "");
     wrap.classList.remove("is-swapping");
-    next.removeEventListener("animationend", onAnimationEnd);
+    outgoing.removeEventListener("animationend", onAnimationEnd);
     artSwapCleanup = null;
     onComplete?.();
   };
   artSwapCleanup = () => {
-    next.removeEventListener("animationend", onAnimationEnd);
+    outgoing.removeEventListener("animationend", onAnimationEnd);
     wrap.classList.remove("is-swapping");
     onComplete?.();
   };
-  next.addEventListener("animationend", onAnimationEnd);
+  outgoing.addEventListener("animationend", onAnimationEnd);
 }
 
 function onDrawerPointerMove(event) {
@@ -959,7 +958,7 @@ async function selectGroup(id) {
 async function playSong(item, shouldPlay, respectInPoint = true) {
   if (!item) return;
   const previous = state.current;
-  const previousArtUrl = previous && previous !== item ? getDisplayedArtUrl() : "";
+  const previousArtUrl = previous && previous !== item ? ensureArtUrl(previous) || getDisplayedArtUrl() : "";
   clearQueuedNext();
   abortTransition();
   state.fading = false;
@@ -1142,7 +1141,7 @@ async function startTransition() {
 function completeTransition(next) {
   if (!transition.active) return;
   const previous = state.current;
-  const previousArtUrl = previous ? getDisplayedArtUrl() : "";
+  const previousArtUrl = previous ? ensureArtUrl(previous) || getDisplayedArtUrl() : "";
   transition.active = false;
   $("player-view").classList.remove("is-transitioning");
   transition.timer = null;
