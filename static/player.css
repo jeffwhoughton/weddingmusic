@@ -98,7 +98,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .resume-button:hover { color: var(--gold-light); }
 @property --fade-progress { syntax: '<angle>'; inherits: false; initial-value: 0deg; }
 @keyframes fade-ring { from { --fade-progress: 0deg; } to { --fade-progress: 360deg; } }
-.play-button-wrap.is-fading { animation: fade-ring 5s linear forwards; }
+.play-button-wrap.is-fading { animation: fade-ring 3.5s linear forwards; }
 
 .up-next-card { display: flex; align-items: center; gap: 10px; width: min(100%, 390px); min-height: 58px; margin: 48px auto 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--cream); background: rgba(56,41,31,.72); text-align: left; }
 .up-next-label { align-self: stretch; display: grid; place-items: center; min-width: 16px; color: var(--gold); font-size: 9px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; writing-mode: vertical-rl; }

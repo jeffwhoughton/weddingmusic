@@ -6,6 +6,7 @@ const CACHE_STORE = "archives";
 const LOCK_PASSWORD = "1235";
 const LOCK_TIMEOUT_MS = 30_000;
 const SHORTENED_DURATION_CACHE = "playlist-studio-shortened-durations";
+const PAUSE_FADE_MS = 3500;
 const DEFAULT_SHORTENED_DURATIONS = { pizza: 4 * 3600 + 21 * 60, dinner: 2 * 3600 + 36 * 60, wedding: 6 * 3600 + 12 * 60 };
 const AUDIO_EXTENSIONS = new Set([".mp3", ".m4a", ".flac", ".ogg", ".opus", ".wav", ".aac", ".webm"]);
 const ALLOWED_EMOJIS = ["💞", "✨", "🍂", "🕺", "🗑️"];
@@ -54,6 +55,7 @@ let lockTimeout = null;
 let menuCloseTimer = null;
 let artSwapToken = 0;
 let artSwapCleanup = null;
+let fadeTimer = null;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (seconds) => {
@@ -1152,19 +1154,22 @@ function computeTransitionDuration(item) {
   return base + (Math.random() * 3 - 1.5);
 }
 
-function abortTransition() {
+function abortTransition(preserveCurrentGain = false) {
   if (transition.timer) clearTimeout(transition.timer);
   if (transition.rateTimer) clearInterval(transition.rateTimer);
+  if (fadeTimer) clearTimeout(fadeTimer);
   transition.timer = null;
   transition.rateTimer = null;
+  fadeTimer = null;
   transition.active = false;
   $("player-view").classList.remove("is-transitioning");
   if (audioContext) {
     const now = audioContext.currentTime;
     const currentGraph = audioGraphs.get(audioA);
     const nextGraph = audioGraphs.get(audioB);
+    const currentGain = preserveCurrentGain ? (currentGraph?.gain.gain.value ?? 1) : 1;
     currentGraph?.gain.gain.cancelScheduledValues(now);
-    currentGraph?.gain.gain.setValueAtTime(1, now);
+    currentGraph?.gain.gain.setValueAtTime(currentGain, now);
     currentGraph?.filter.frequency.cancelScheduledValues(now);
     currentGraph?.filter.frequency.setValueAtTime(20, now);
     nextGraph?.gain.gain.cancelScheduledValues(now);
@@ -1309,22 +1314,24 @@ function completeTransition(next) {
 
 function fadeToPause() {
   if (state.fading || audioA.paused) return;
-  abortTransition();
+  abortTransition(true);
   state.fading = true;
   initAudioGraph();
   const graph = audioGraphs.get(audioA).gain.gain;
   const now = audioContext.currentTime;
+  const startingGain = Math.max(.001, Math.min(1, graph.value));
   graph.cancelScheduledValues(now);
-  graph.setValueAtTime(1, now);
-  graph.linearRampToValueAtTime(0, now + 5);
-  setTimeout(async () => {
+  graph.setValueAtTime(startingGain, now);
+  graph.exponentialRampToValueAtTime(.001, now + PAUSE_FADE_MS / 1000);
+  fadeTimer = setTimeout(async () => {
+    fadeTimer = null;
     if (!state.fading) return;
     const pausedTime = audioA.currentTime;
     const pausedItem = state.current;
     audioA.pause();
     const currentTime = audioContext.currentTime;
     graph.cancelScheduledValues(currentTime);
-    graph.setValueAtTime(1, currentTime);
+    graph.setValueAtTime(0, currentTime);
     state.fading = false;
     const checkpoint = { item: pausedItem, time: pausedTime };
     state.fadePaused = checkpoint;
@@ -1335,7 +1342,7 @@ function fadeToPause() {
     }
     updatePlayButton();
     updateNextTrackLabel();
-  }, 5000);
+  }, PAUSE_FADE_MS + 40);
   updatePlayButton();
 }
 
