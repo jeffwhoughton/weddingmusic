@@ -65,6 +65,18 @@ const esc = (value) => String(value ?? "").replace(/[&<>\"]/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
 }[char]));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const yieldToBrowser = () => new Promise((resolve) => {
+  if (window.requestIdleCallback) window.requestIdleCallback(resolve, { timeout: 1000 });
+  else setTimeout(resolve, 50);
+});
+
+async function waitForPlaybackIdle() {
+  while (true) {
+    while (!audioA.paused || transition.active || state.fading) await sleep(250);
+    await yieldToBrowser();
+    if (audioA.paused && !transition.active && !state.fading) return;
+  }
+}
 
 function toast(message) {
   const element = $("toast");
@@ -185,25 +197,20 @@ async function downloadZip() {
     throw new Error(message);
   }
 
-  if (!response.body) {
-    const blob = await response.blob();
-    setDownloadStatus("Checking the archive…", .92);
-    return blob;
-  }
-
-  const reader = response.body.getReader();
-  const chunks = [];
   const total = Number(response.headers.get("content-length")) || 0;
   let received = 0;
-  while (true) {
-    const part = await reader.read();
-    if (part.done) break;
-    chunks.push(part.value);
-    received += part.value.byteLength;
-    setDownloadStatus(total ? `Downloading the playlist archive… ${Math.round(received / total * 100)}%` : "Downloading the playlist archive…", total ? received / total : null);
-  }
+  const progressStream = new TransformStream({
+    transform(chunk, controller) {
+      received += chunk.byteLength;
+      setDownloadStatus(total ? `Downloading the playlist archive… ${Math.round(received / total * 100)}%` : "Downloading the playlist archive…", total ? received / total : null);
+      controller.enqueue(chunk);
+    },
+  });
+  const blob = response.body
+    ? await new Response(response.body.pipeThrough(progressStream)).blob()
+    : await response.blob();
   setDownloadStatus("Checking the archive…", .92);
-  return new Blob(chunks, { type: response.headers.get("content-type") || "application/zip" });
+  return blob;
 }
 
 async function getZipBlob(allowDownload = false) {
@@ -312,7 +319,14 @@ async function extractPlaylists(blob, loadedZip = null) {
 }
 
 async function ensureBlob(item) {
-  if (!item.blob) item.blob = await item.entry.async("blob");
+  if (!item.blob) {
+    if (!item.blobPromise) {
+      item.blobPromise = item.entry.async("blob")
+        .then((blob) => { item.blob = blob; return blob; })
+        .finally(() => { item.blobPromise = null; });
+    }
+    await item.blobPromise;
+  }
   return item.blob;
 }
 
@@ -370,9 +384,17 @@ function loadTags(item) {
 }
 
 async function loadItemMetadata(item) {
-  if (item.metadataLoaded) return item;
   await ensureBlob(item);
   ensureUrl(item);
+  if (item.metadataLoaded) return item;
+  if (!item.metadataPromise) {
+    item.metadataPromise = loadItemMetadataInternal(item)
+      .finally(() => { item.metadataPromise = null; });
+  }
+  return item.metadataPromise;
+}
+
+async function loadItemMetadataInternal(item) {
   const tags = await loadTags(item);
   if (tags) {
     item.transitionPoint = numberFromTag(tags, "PS_TRANSITION");
@@ -454,6 +476,18 @@ function releaseItemResources(item) {
 
 async function analyzeWaveform(item) {
   if (item.waveform || !item.duration) return;
+  if (!item.waveformPromise) {
+    item.waveformPromise = analyzeWaveformInternal(item)
+      .finally(() => { item.waveformPromise = null; });
+  }
+  return item.waveformPromise;
+}
+
+async function analyzeWaveformInternal(item) {
+  if (item.transitionPoint !== null && !item.bpmOutro) {
+    item.waveform = { data: new Float32Array(0), winSec: .1 };
+    return;
+  }
   try {
     const context = new (window.AudioContext || window.webkitAudioContext)();
     const decoded = await context.decodeAudioData(await item.blob.arrayBuffer());
@@ -632,28 +666,41 @@ function formatClockTime(seconds) {
 
 async function preloadMetadata(group) {
   for (const item of group.songs) {
+    await waitForPlaybackIdle();
     try {
       await loadItemMetadata(item);
       await analyzeWaveform(item);
     } catch (_) {}
     if (state.selectedGroup === group) updateSetlistRow(item);
+    if (item !== state.current && item !== state.queuedNext) releaseItemResources(item);
     renderPicker();
     renderDrawer();
+    await yieldToBrowser();
   }
 }
 
 async function preloadGroupDurations(group) {
   let total = 0;
   for (const item of group.songs) {
+    await waitForPlaybackIdle();
     try {
       await loadItemMetadata(item);
       await analyzeWaveform(item);
       total += getShortenedDuration(item);
     } catch (_) {}
+    if (item !== state.current && item !== state.queuedNext) releaseItemResources(item);
+    await yieldToBrowser();
   }
   saveShortenedDuration(group.id, total);
   renderPicker();
   renderDrawer();
+}
+
+async function preloadAllGroupDurations() {
+  for (const group of state.groups) {
+    await preloadGroupDurations(group);
+    await yieldToBrowser();
+  }
 }
 
 function clearQueuedNext() {
@@ -1452,7 +1499,7 @@ async function bootstrap(allowDownload = false) {
     $("download-retry").hidden = true;
     $("download-screen").style.display = "none";
     $("app-shell").hidden = false;
-    state.groups.forEach((group) => preloadGroupDurations(group));
+    preloadAllGroupDurations();
   } catch (error) {
     setDownloadStatus(error.message || "Could not load the playlist archive.");
     $("download-progress").style.width = "0";
