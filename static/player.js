@@ -663,6 +663,11 @@ function setDrawerMode(mode) {
 function animatePlayerArt(item) {
   const current = $("player-art");
   const next = $("player-art-next");
+  if (!current) return;
+  if (!next || !current.parentElement) {
+    setImage(current, item ? ensureArtUrl(item) : "");
+    return;
+  }
   const wrap = current.parentElement;
   setImage(next, item ? ensureArtUrl(item) : "");
   wrap.classList.remove("is-swapping");
@@ -774,7 +779,9 @@ function updatePlayer() {
   $("header-playlist").textContent = state.selectedGroup?.name || "Choose a set";
   $("player-title").textContent = item?.name || "Ready when you are";
   $("player-artist").textContent = item?.artist || "Select a song below to begin";
-  if (!$('player-art-wrap').classList.contains("is-swapping")) setImage($("player-art"), item ? ensureArtUrl(item) : "");
+  const artWrap = $("player-art-wrap");
+  const art = $("player-art");
+  if (art && (!artWrap || !artWrap.classList.contains("is-swapping"))) setImage(art, item ? ensureArtUrl(item) : "");
   updateMediaSession();
   updatePlayButton();
   updateNextTrackLabel();
