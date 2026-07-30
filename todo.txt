@@ -1,0 +1,2 @@
+- Fix issue with pausing or clicking away or changing "go here next" when transitioning between songs
+- cancel fade out if hitting pause again
