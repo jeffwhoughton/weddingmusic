@@ -5,6 +5,8 @@ const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
 const LOCK_PASSWORD = "1235";
 const LOCK_TIMEOUT_MS = 30_000;
+const SHORTENED_DURATION_CACHE = "playlist-studio-shortened-durations";
+const DEFAULT_SHORTENED_DURATIONS = { pizza: 4 * 3600 + 21 * 60, dinner: 2 * 3600 + 36 * 60, wedding: 6 * 3600 + 12 * 60 };
 const AUDIO_EXTENSIONS = new Set([".mp3", ".m4a", ".flac", ".ogg", ".opus", ".wav", ".aac", ".webm"]);
 const ALLOWED_EMOJIS = ["💞", "✨", "🍂", "🕺", "🗑️"];
 const GROUPS = [
@@ -25,6 +27,7 @@ const state = {
   urls: new Set(),
   locked: false,
   lockEngaged: false,
+    shortenedDurations: { ...DEFAULT_SHORTENED_DURATIONS },
   fading: false,
   fadePaused: null,
   resumeFadeIn: false,
@@ -517,28 +520,46 @@ function getShortenedDuration(item) {
   return Math.max(0, outPoint - inPoint);
 }
 
-function getGroupShortenedDuration(group) {
-  return group.songs.reduce((total, item) => total + getShortenedDuration(item), 0);
+function loadShortenedDurationCache() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(SHORTENED_DURATION_CACHE) || "{}");
+    for (const group of GROUPS) {
+      if (Number.isFinite(cached[group.id])) state.shortenedDurations[group.id] = cached[group.id];
+    }
+  } catch (_) {}
 }
 
-function formatLongDuration(seconds) {
+function saveShortenedDuration(groupId, seconds) {
+  state.shortenedDurations[groupId] = seconds;
+  try {
+    const cached = JSON.parse(localStorage.getItem(SHORTENED_DURATION_CACHE) || "{}");
+    cached[groupId] = seconds;
+    localStorage.setItem(SHORTENED_DURATION_CACHE, JSON.stringify(cached));
+  } catch (_) {}
+}
+
+function formatPlaylistDuration(seconds) {
   const totalMinutes = Math.round(Math.max(0, seconds) / 60);
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
   const parts = [];
   if (hours) parts.push(`${hours} hour${hours === 1 ? "" : "s"}`);
-  if (minutes || !parts.length) parts.push(`${minutes} minute${minutes === 1 ? "" : "s"}`);
+  if (minutes || !hours) parts.push(`${minutes} minute${minutes === 1 ? "" : "s"}`);
   return parts.join(", ");
 }
 
+function getGroupShortenedDuration(group) {
+  return state.shortenedDurations[group.id] || 0;
+}
+
 function renderPicker() {
-  const renderButton = (group) => `<button class="picker-button" data-group="${group.id}"><span><strong>${esc(group.name)}</strong><span>${formatLongDuration(getGroupShortenedDuration(group))}</span></span><b>›</b></button>`;
+  const renderButton = (group) => `<button class="picker-button" data-group="${group.id}"><span><strong>${esc(group.name)}</strong><span>${formatPlaylistDuration(getGroupShortenedDuration(group))}</span></span><b>›</b></button>`;
   $("picker-list").innerHTML = state.groups.map(renderButton).join("");
   $("picker-list").querySelectorAll("[data-group]").forEach((button) => button.addEventListener("click", () => selectGroup(button.dataset.group)));
 }
 
 function renderDrawer() {
-  $("drawer-playlists").innerHTML = state.groups.map((group) => `<button class="drawer-playlist${state.selectedGroup?.id === group.id ? " active" : ""}" data-group="${group.id}"><strong>${esc(group.name)}</strong><span>${formatLongDuration(getGroupShortenedDuration(group))}</span></button>`).join("");
+  $("drawer-playlists").innerHTML = state.groups.map((group) => `<button class="drawer-playlist${state.selectedGroup?.id === group.id ? " active" : ""}" data-group="${group.id}"><strong>${esc(group.name)}</strong><span>${formatPlaylistDuration(getGroupShortenedDuration(group))}</span></button>`).join("");
   $("drawer-playlists").querySelectorAll("[data-group]").forEach((button) => button.addEventListener("click", () => {
     selectGroup(button.dataset.group);
     closeDrawer();
@@ -622,9 +643,15 @@ async function preloadMetadata(group) {
 }
 
 async function preloadGroupDurations(group) {
-  await Promise.all(group.songs.map(async (item) => {
-    try { await loadItemMetadata(item); } catch (_) {}
-  }));
+  let total = 0;
+  for (const item of group.songs) {
+    try {
+      await loadItemMetadata(item);
+      await analyzeWaveform(item);
+      total += getShortenedDuration(item);
+    } catch (_) {}
+  }
+  saveShortenedDuration(group.id, total);
   renderPicker();
   renderDrawer();
 }
@@ -1411,13 +1438,14 @@ async function bootstrap(allowDownload = false) {
     state.groups = await extractPlaylists(archive.blob, archive.zip);
     const missing = state.groups.filter((group) => !group.songs.length);
     if (missing.length) throw new Error(`The archive is missing ${missing[0].name}.`);
+    loadShortenedDurationCache();
     renderPicker();
     renderDrawer();
     $("google-signin-button").hidden = true;
     $("download-retry").hidden = true;
     $("download-screen").style.display = "none";
     $("app-shell").hidden = false;
-    Promise.all(state.groups.map((group) => preloadGroupDurations(group)));
+    state.groups.forEach((group) => preloadGroupDurations(group));
   } catch (error) {
     setDownloadStatus(error.message || "Could not load the playlist archive.");
     $("download-progress").style.width = "0";
