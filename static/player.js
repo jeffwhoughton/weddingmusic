@@ -48,6 +48,7 @@ let driveAccessToken = null;
 let driveTokenExpiresAt = 0;
 let tokenRequest = null;
 let lockTimeout = null;
+let menuCloseTimer = null;
 let artSwapToken = 0;
 let artSwapCleanup = null;
 
@@ -901,8 +902,14 @@ function setDrawer(open) {
   $("menu-drawer").classList.toggle("open", open);
   $("drawer-backdrop").classList.toggle("open", open);
   $("menu-drawer").setAttribute("aria-hidden", String(!open));
+  if (menuCloseTimer) clearTimeout(menuCloseTimer);
+  menuCloseTimer = open ? setTimeout(closeDrawer, 30000) : null;
 }
 function closeDrawer() { setDrawer(false); }
+
+function resetMenuCloseTimer() {
+  if ($("menu-drawer").classList.contains("open")) setDrawer(true);
+}
 
 function closeSearchModal() {
   $("search-modal").hidden = true;
@@ -1339,7 +1346,6 @@ function setLocked(locked) {
   button.classList.toggle("is-locked", locked);
   if (lockTimeout) clearTimeout(lockTimeout);
   lockTimeout = !locked && state.lockEngaged ? setTimeout(() => setLocked(true), LOCK_TIMEOUT_MS) : null;
-  $("lock-overlay").hidden = !locked;
   if (locked) enterFullscreen();
   else exitFullscreen();
 }
@@ -1392,6 +1398,8 @@ async function bootstrap(allowDownload = false) {
 $("menu-button").addEventListener("click", () => setDrawer(true));
 $("menu-close").addEventListener("click", closeDrawer);
 $("drawer-backdrop").addEventListener("click", closeDrawer);
+$("menu-drawer").addEventListener("pointerdown", resetMenuCloseTimer);
+$("menu-drawer").addEventListener("keydown", resetMenuCloseTimer);
 $('play-button').addEventListener("click", handleTransport);
 $("resume-button").addEventListener("click", goBackToPaused);
 $("first-dance-button").addEventListener("click", () => selectGroup("wedding"));
