@@ -770,7 +770,7 @@ function onDrawerPointerMove(event) {
   const height = $("player-view").clientHeight;
   const nextHeight = Math.max(29, Math.min(height, drawerState.startHeight + drawerState.startY - event.clientY));
   pane.style.height = `${nextHeight}px`;
-  if (event.clientY < drawerState.startY - 3) pane.classList.remove("is-content-veiled");
+  if (event.clientY < drawerState.startY) pane.classList.remove("is-content-veiled");
   else updateDrawerContentVeil(nextHeight);
 }
 
@@ -793,7 +793,6 @@ function onDrawerPointerDown(event) {
   drawerState.startY = event.clientY;
   drawerState.startHeight = pane.getBoundingClientRect().height;
   pane.classList.add("is-dragging");
-  pane.classList.remove("is-content-veiled");
   pane.setPointerCapture?.(event.pointerId);
 }
 
