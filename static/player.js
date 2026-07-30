@@ -503,6 +503,11 @@ function setImage(image, url) {
   image.classList.toggle("placeholder", !url);
 }
 
+function getDisplayedArtUrl() {
+  const image = $("player-art");
+  return image?.getAttribute("src") || "";
+}
+
 function drawWaveform(item) {
   const canvas = $("waveform-canvas");
   const track = $("scrub-track");
@@ -926,6 +931,12 @@ async function selectGroup(id) {
   const previous = state.current;
   abortTransition();
   audioA.pause(); audioB.pause();
+  audioA.removeAttribute("src");
+  audioB.removeAttribute("src");
+  audioA.load();
+  audioB.load();
+  audioA.currentTime = 0;
+  audioB.currentTime = 0;
   releaseItemResources(previous);
   state.selectedGroup = group;
   state.songs = group.songs;
@@ -939,6 +950,7 @@ async function selectGroup(id) {
   renderDrawer();
   renderSetlist();
   updatePlayer();
+  onAudioTimeUpdate();
   selectInitialSong(state.current);
   preloadArtwork(group);
   preloadMetadata(group);
@@ -947,7 +959,7 @@ async function selectGroup(id) {
 async function playSong(item, shouldPlay, respectInPoint = true) {
   if (!item) return;
   const previous = state.current;
-  const previousArtUrl = previous && previous !== item ? ensureArtUrl(previous) : "";
+  const previousArtUrl = previous && previous !== item ? getDisplayedArtUrl() : "";
   clearQueuedNext();
   abortTransition();
   state.fading = false;
@@ -1130,7 +1142,7 @@ async function startTransition() {
 function completeTransition(next) {
   if (!transition.active) return;
   const previous = state.current;
-  const previousArtUrl = previous ? ensureArtUrl(previous) : "";
+  const previousArtUrl = previous ? getDisplayedArtUrl() : "";
   transition.active = false;
   $("player-view").classList.remove("is-transitioning");
   transition.timer = null;
