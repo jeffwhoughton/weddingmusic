@@ -105,6 +105,8 @@ button { -webkit-tap-highlight-color: transparent; }
 .up-next-info strong, .up-next-info span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .up-next-info strong { font-size: 12px; font-weight: 600; }
 .up-next-info span { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.first-dance-button { width: min(100%, 390px); margin: 10px auto 0; padding: 10px 14px; border: 1px solid rgba(224,166,78,.45); border-radius: 9px; color: var(--gold-light); background: rgba(224,166,78,.1); cursor: pointer; font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.first-dance-button:active { transform: translateY(1px); }
 .setlist-pane { position: absolute; right: 0; bottom: 0; left: 0; z-index: 5; height: var(--drawer-height, 47%); min-height: 0; border-top: 1px solid var(--line); background: rgba(27,20,16,.98); box-shadow: 0 -14px 36px rgba(0,0,0,.25); transition: height .28s cubic-bezier(.2,.8,.2,1); }
 .setlist-pane.is-dragging { transition: none; }
 .setlist-handle { position: absolute; top: 0; left: 50%; z-index: 3; display: grid; place-items: center; width: 100px; height: 29px; padding: 0; border: 0; transform: translate(-50%, -1px); color: var(--muted); background: transparent; cursor: grab; touch-action: none; }
@@ -134,7 +136,7 @@ button { -webkit-tap-highlight-color: transparent; }
 .song-times { display: flex; flex-direction: column; align-items: flex-end; min-width: 42px; }
 .song-duration, .song-short-duration { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .song-short-duration { margin-top: 2px; color: rgba(201,184,159,.52); font-size: 9px; }
-.song-queue-next { width: 28px; height: 28px; margin: 0 -9px 0 0; padding: 0; border: 1px solid transparent; border-radius: 7px; color: var(--muted); background: transparent; cursor: pointer; font-size: 17px; line-height: 1; opacity: .45; transition: opacity .15s, border-color .15s, color .15s, background .15s; }
+.song-queue-next { width: 28px; height: 28px; margin: 0 -9px 0 0; padding: 0; border: 1px solid transparent; border-radius: 7px; color: var(--muted); background: transparent; cursor: pointer; font-size: 17px; line-height: 1; opacity: .45; transform: translateX(9px); transition: opacity .15s, border-color .15s, color .15s, background .15s; }
 .song-queue-next:hover, .song-queue-next:focus-visible, .song-queue-next.active { opacity: 1; }
 .song-queue-next:hover, .song-queue-next:focus-visible { border-color: var(--line); color: var(--gold-light); background: rgba(224,166,78,.1); outline: 0; }
 .song-queue-next.active { border-color: var(--gold); color: var(--gold); background: rgba(224,166,78,.14); }

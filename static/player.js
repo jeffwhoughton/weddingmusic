@@ -47,6 +47,7 @@ let driveAccessToken = null;
 let driveTokenExpiresAt = 0;
 let tokenRequest = null;
 let lockTimeout = null;
+let artSwapToken = 0;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (seconds) => {
@@ -628,6 +629,7 @@ function updateUpNext() {
   $("up-next-title").textContent = next?.name || "End of set";
   $("up-next-artist").textContent = next?.artist || "No more tracks queued";
   setImage(art, next ? ensureArtUrl(next) : "");
+  $("first-dance-button").hidden = state.selectedGroup?.id !== "dinner";
 }
 
 function drawerHeightFor(mode) {
@@ -677,15 +679,22 @@ function animatePlayerArt(item) {
     return;
   }
   const wrap = current.parentElement;
+  const swapToken = ++artSwapToken;
   setImage(next, item ? ensureArtUrl(item) : "");
   wrap.classList.remove("is-swapping");
   void wrap.offsetWidth;
   wrap.classList.add("is-swapping");
-  wrap.addEventListener("animationend", () => {
+  const onAnimationEnd = (event) => {
+    if (event.animationName !== "art-slide-in" || swapToken !== artSwapToken) {
+      if (swapToken !== artSwapToken) next.removeEventListener("animationend", onAnimationEnd);
+      return;
+    }
     setImage(current, item ? ensureArtUrl(item) : "");
     setImage(next, "");
     wrap.classList.remove("is-swapping");
-  }, { once: true });
+    next.removeEventListener("animationend", onAnimationEnd);
+  };
+  next.addEventListener("animationend", onAnimationEnd);
 }
 
 function onDrawerPointerMove(event) {
@@ -756,7 +765,8 @@ async function preloadArtwork(group) {
       ensureArtUrl(item);
       if (state.selectedGroup === group) {
         renderSetlist();
-        if (state.current === item) setImage($("player-art"), ensureArtUrl(item));
+        const artWrap = $("player-art-wrap");
+        if (state.current === item && !artWrap?.classList.contains("is-swapping")) setImage($("player-art"), ensureArtUrl(item));
       }
     } catch (_) {}
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1335,6 +1345,7 @@ $("menu-close").addEventListener("click", closeDrawer);
 $("drawer-backdrop").addEventListener("click", closeDrawer);
 $('play-button').addEventListener("click", handleTransport);
 $("resume-button").addEventListener("click", goBackToPaused);
+$("first-dance-button").addEventListener("click", () => selectGroup("wedding"));
 $("scrub-track").addEventListener("click", onScrubClick);
 $("setlist").addEventListener("scroll", updateScrollPip, { passive: true });
 $("setlist-handle").addEventListener("pointerdown", onDrawerPointerDown);
