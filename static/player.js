@@ -1,5 +1,5 @@
 const GOOGLE_CLIENT_ID = "465530902895-smsu60b8qvdv83ahrbr7pi7grl5cjh8b.apps.googleusercontent.com";
-const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/1epDRVHP4ENYeab_4imy577X8ZjmZjy6r?alt=media&acknowledgeAbuse=true";
+const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/1lEbueEUIIzJtZuP233Bgc8LbpeeE6A2p?alt=media&acknowledgeAbuse=true";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
@@ -925,6 +925,35 @@ function setDrawer(open) {
 }
 function closeDrawer() { setDrawer(false); }
 
+function closeSearchModal() {
+  $("search-modal").hidden = true;
+}
+
+async function searchSongs(query) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return;
+
+  $("search-modal").hidden = false;
+  $("search-status").textContent = "Searching playlists…";
+  $("search-results").innerHTML = "";
+  await sleep(0);
+
+  const results = state.groups.flatMap((group) => group.songs
+    .filter((song) => song.name.toLowerCase().includes(normalizedQuery) || song.artist.toLowerCase().includes(normalizedQuery))
+    .map((song) => ({ group, song })));
+
+  $("search-status").textContent = results.length
+    ? `${results.length} match${results.length === 1 ? "" : "es"}`
+    : `No matches for "${query.trim()}"`;
+  $("search-results").innerHTML = results.map(({ group, song }) => `
+    <div class="search-result">
+      <div class="search-result-title">${esc(song.name)}</div>
+      <div class="search-result-artist">${esc(song.artist)}</div>
+      <div class="search-result-playlist">${esc(group.name)} #${song.globalIndex + 1}</div>
+    </div>
+  `).join("");
+}
+
 async function selectGroup(id) {
   const group = state.groups.find((candidate) => candidate.id === id);
   if (!group) return;
@@ -1405,6 +1434,16 @@ $("lock-close").addEventListener("click", () => { $("lock-modal").hidden = true;
 $("clear-cache-button").addEventListener("click", () => { $("confirm-modal").hidden = false; });
 $("confirm-cancel").addEventListener("click", () => { $("confirm-modal").hidden = true; });
 $("confirm-clear").addEventListener("click", clearCache);
+$("drawer-search-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const input = $("drawer-search-input");
+  searchSongs(input.value);
+  input.value = "";
+});
+$("search-close").addEventListener("click", closeSearchModal);
+$("search-modal").addEventListener("click", (event) => {
+  if (event.target === $("search-modal")) closeSearchModal();
+});
 $("google-signin-button").addEventListener("click", () => bootstrap(true));
 $("download-retry").addEventListener("click", () => bootstrap(true));
 

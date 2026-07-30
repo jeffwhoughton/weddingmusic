@@ -94,6 +94,13 @@
     </div>
     <div class="drawer-playlists" id="drawer-playlists"></div>
     <div class="drawer-foot">
+      <form class="drawer-search" id="drawer-search-form">
+        <label class="eyebrow" for="drawer-search-input">Find a song</label>
+        <div class="drawer-search-controls">
+          <input id="drawer-search-input" type="search" placeholder="Song or artist" autocomplete="off">
+          <button class="drawer-search-go" type="submit">GO</button>
+        </div>
+      </form>
       <button class="drawer-action" id="clear-cache-button">↻ Clear cache and redownload ZIP</button>
       <span class="cache-note" id="cache-note"></span>
     </div>
@@ -121,6 +128,16 @@
         <button class="drawer-action" id="confirm-cancel">Keep cache</button>
         <button class="wide-button" id="confirm-clear">Redownload</button>
       </div>
+    </div>
+  </div>
+
+  <div class="modal-layer" id="search-modal" hidden>
+    <div class="modal-card search-modal-card" role="dialog" aria-modal="true" aria-labelledby="search-heading">
+      <button class="modal-close" id="search-close" aria-label="Close search">&times;</button>
+      <div class="eyebrow">Song search</div>
+      <h2 id="search-heading">Search results</h2>
+      <div class="search-status" id="search-status"></div>
+      <div class="search-results" id="search-results"></div>
     </div>
   </div>
 
