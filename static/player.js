@@ -24,6 +24,7 @@ const state = {
   started: false,
   urls: new Set(),
   locked: false,
+  lockEngaged: false,
   fading: false,
   fadePaused: null,
   resumeFadeIn: false,
@@ -490,7 +491,7 @@ async function analyzeWaveform(item) {
       item.transitionPoint = Math.max(item.duration * .6, Math.min(item.duration * .88, bestIndex * .1));
     }
     await context.close();
-    if (state.current === item) { drawWaveform(item); updateMarkers(); }
+    if (state.current === item) updateMarkers();
   } catch (_) {
     item.waveform = { data: new Float32Array(0), winSec: .1 };
     if (item.transitionPoint === null) item.transitionPoint = Math.max(0, item.duration - 8);
@@ -506,35 +507,6 @@ function setImage(image, url) {
 function getDisplayedArtUrl() {
   const image = $("player-art");
   return image?.getAttribute("src") || "";
-}
-
-function drawWaveform(item) {
-  const canvas = $("waveform-canvas");
-  const track = $("scrub-track");
-  const width = track.clientWidth;
-  const height = track.clientHeight;
-  if (!width || !height) return;
-  const ratio = window.devicePixelRatio || 1;
-  canvas.width = Math.round(width * ratio);
-  canvas.height = Math.round(height * ratio);
-  const context = canvas.getContext("2d");
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  if (!item?.waveform?.data?.length) return;
-  const data = item.waveform.data;
-  const bars = Math.max(1, Math.floor(canvas.width / (3 * ratio)));
-  const barWidth = canvas.width / bars;
-  const duration = item.duration || 0;
-  const inPoint = item.startPoint === null ? 0 : Math.max(0, item.startPoint);
-  const outPoint = item.transitionPoint === null ? duration : Math.max(inPoint, Math.min(duration, item.transitionPoint));
-  for (let index = 0; index < bars; index++) {
-    const value = data[Math.min(data.length - 1, Math.floor(index / bars * data.length))] || 0;
-    const barHeight = Math.max(ratio, value * canvas.height * .86);
-    const time = (index + .5) / bars * duration;
-    context.fillStyle = time < inPoint || time > outPoint
-      ? "rgba(240, 215, 145, .22)"
-      : "rgba(240, 215, 145, .58)";
-    context.fillRect(index * barWidth, (canvas.height - barHeight) / 2, Math.max(ratio, barWidth - ratio), barHeight);
-  }
 }
 
 function renderPicker() {
@@ -665,7 +637,9 @@ function clearDrawerCloseTimer() {
 
 function scheduleDrawerClose() {
   clearDrawerCloseTimer();
-  if (drawerState.mode === "open") drawerState.closeTimer = setTimeout(() => setDrawerMode("half"), 30000);
+  if (!$('player-view').hidden && (drawerState.mode === "open" || drawerState.mode === "half")) {
+    drawerState.closeTimer = setTimeout(() => setDrawerMode("closed"), 30000);
+  }
 }
 
 function setDrawerMode(mode) {
@@ -684,7 +658,7 @@ function setDrawerMode(mode) {
   const centeredPadding = Math.max(basePadding, (playerPane.clientHeight - contentHeight - 14) / 2);
   playerPane?.style.setProperty("--player-top-padding", `${mode === "closed" ? centeredPadding : basePadding}px`);
   $("setlist-handle").setAttribute("aria-expanded", String(mode === "open"));
-  if (mode === "open") scheduleDrawerClose();
+  if (mode === "open" || mode === "half") scheduleDrawerClose();
   else clearDrawerCloseTimer();
   updateUpNext();
 }
@@ -835,9 +809,6 @@ function updatePlayer() {
   updateNextTrackLabel();
   updateUpNext();
   updateMarkers();
-  if (item) {
-    drawWaveform(item);
-  }
 }
 
 function updateMediaSession() {
@@ -886,12 +857,18 @@ function updateMarkers() {
   const duration = item?.duration || audioA.duration || 0;
   const transitionMarker = $("transition-marker");
   const startMarker = $("start-marker");
+  const position = $("scrub-position");
   if (!item || !duration) {
     transitionMarker.style.display = "none";
     startMarker.style.display = "none";
+    position.style.display = "none";
     return;
   }
-  if (item.transitionPoint !== null) {
+  const inPercent = item.startPoint === null ? 0 : Math.max(0, Math.min(100, item.startPoint / duration * 100));
+  const outPercent = item.transitionPoint === null ? 100 : Math.max(inPercent, Math.min(100, item.transitionPoint / duration * 100));
+  $("scrub-track").style.setProperty("--scrub-in", `${inPercent}%`);
+  $("scrub-track").style.setProperty("--scrub-out", `${outPercent}%`);
+  if (item.transitionPoint !== null && item.transitionPoint / duration < .9) {
     transitionMarker.style.display = "block";
     transitionMarker.style.left = `${Math.max(0, Math.min(100, item.transitionPoint / duration * 100))}%`;
   } else transitionMarker.style.display = "none";
@@ -899,6 +876,8 @@ function updateMarkers() {
     startMarker.style.display = "block";
     startMarker.style.left = `${Math.max(0, Math.min(100, item.startPoint / duration * 100))}%`;
   } else startMarker.style.display = "none";
+  position.style.display = "block";
+  position.style.left = `${Math.max(0, Math.min(100, audioA.currentTime / duration * 100))}%`;
 }
 
 function seekToInPoint(audio, item) {
@@ -975,6 +954,7 @@ async function selectGroup(id) {
   state.started = false;
   $("playlist-picker").hidden = true;
   $("player-view").hidden = false;
+  scheduleDrawerClose();
   $("setlist").scrollTop = 0;
   renderDrawer();
   renderSetlist();
@@ -1288,6 +1268,7 @@ function onAudioEnded() {
 function onAudioTimeUpdate() {
   const duration = audioA.duration || state.current?.duration || 0;
   $("scrub-fill").style.width = duration ? `${audioA.currentTime / duration * 100}%` : "0";
+  $("scrub-position").style.left = duration ? `${audioA.currentTime / duration * 100}%` : "0";
   $("time-current").textContent = fmt(audioA.currentTime);
   $("time-duration").textContent = fmt(duration);
   updateMediaPosition();
@@ -1350,13 +1331,15 @@ function shakeLockButton() {
 }
 
 function setLocked(locked) {
+  if (locked) state.lockEngaged = true;
   state.locked = locked;
   const button = $("lock-button");
   button.textContent = locked ? "🔒" : "🔓";
   button.setAttribute("aria-label", locked ? "Unlock screen" : "Lock screen");
   button.classList.toggle("is-locked", locked);
   if (lockTimeout) clearTimeout(lockTimeout);
-  lockTimeout = locked ? null : setTimeout(() => setLocked(true), LOCK_TIMEOUT_MS);
+  lockTimeout = !locked && state.lockEngaged ? setTimeout(() => setLocked(true), LOCK_TIMEOUT_MS) : null;
+  $("lock-overlay").hidden = !locked;
   if (locked) enterFullscreen();
   else exitFullscreen();
 }
@@ -1413,13 +1396,19 @@ $('play-button').addEventListener("click", handleTransport);
 $("resume-button").addEventListener("click", goBackToPaused);
 $("first-dance-button").addEventListener("click", () => selectGroup("wedding"));
 $("scrub-track").addEventListener("click", onScrubClick);
-$("setlist").addEventListener("scroll", updateScrollPip, { passive: true });
+$("setlist").addEventListener("scroll", () => {
+  updateScrollPip();
+  clearDrawerCloseTimer();
+  if (drawerState.mode === "open" || drawerState.mode === "half") scheduleDrawerClose();
+  if (!state.locked) setLocked(false);
+}, { passive: true });
 $("setlist-handle").addEventListener("pointerdown", onDrawerPointerDown);
 $("setlist-pane").addEventListener("pointermove", onDrawerPointerMove);
 $("setlist-pane").addEventListener("pointerup", onDrawerPointerUp);
 $("setlist-pane").addEventListener("pointercancel", onDrawerPointerUp);
 $("setlist-pane").addEventListener("pointerdown", () => {
-  if (drawerState.mode === "open") scheduleDrawerClose();
+  clearDrawerCloseTimer();
+  if (drawerState.mode === "open" || drawerState.mode === "half") scheduleDrawerClose();
 });
 $("lock-button").addEventListener("click", () => {
   if (state.locked) showLockPrompt();
@@ -1472,7 +1461,7 @@ document.addEventListener("keydown", () => {
 }, true);
 
 window.addEventListener("resize", () => {
-  if (state.current) { drawWaveform(state.current); updateMarkers(); }
+  if (state.current) updateMarkers();
   if (drawerState.mode !== "half") setDrawerMode(drawerState.mode);
   updateScrollPip();
 });

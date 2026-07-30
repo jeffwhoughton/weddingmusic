@@ -51,10 +51,10 @@
 
         <div class="scrub" id="scrub">
           <div class="scrub-track" id="scrub-track">
-            <canvas id="waveform-canvas"></canvas>
             <div class="scrub-fill" id="scrub-fill"></div>
             <div class="scrub-marker start-marker" id="start-marker"></div>
             <div class="scrub-marker transition-marker" id="transition-marker"></div>
+            <div class="scrub-position" id="scrub-position"></div>
           </div>
           <div class="scrub-times"><span id="time-current">0:00</span><span id="time-duration">0:00</span></div>
         </div>
@@ -89,7 +89,7 @@
 
   <aside class="menu-drawer" id="menu-drawer" aria-hidden="true">
     <div class="drawer-head">
-      <div><div class="eyebrow">Playlist Studio</div><h2>Your sets</h2></div>
+      <div><div class="drawer-brand">JEFF <span>&amp;</span> ALEX</div><h2>Your sets</h2></div>
       <button class="icon-button" id="menu-close" aria-label="Close playlists">&times;</button>
     </div>
     <div class="drawer-playlists" id="drawer-playlists"></div>
@@ -106,6 +106,7 @@
     </div>
   </aside>
   <div class="drawer-backdrop" id="drawer-backdrop"></div>
+  <div class="lock-overlay" id="lock-overlay" hidden></div>
 
   <div class="modal-layer" id="lock-modal" hidden>
     <div class="modal-card">
