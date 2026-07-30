@@ -757,6 +757,7 @@ function onDrawerPointerDown(event) {
 }
 
 function scrollToCurrentSong() {
+  if (drawerState.mode === "closed") return;
   const list = $("setlist");
   const row = state.current && list.querySelector(`.song-row[data-song="${state.current.globalIndex}"]`);
   if (!row) return;

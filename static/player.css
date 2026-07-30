@@ -143,7 +143,6 @@ button { -webkit-tap-highlight-color: transparent; }
 .song-queue-next.active { border-color: var(--gold); color: var(--gold); background: rgba(224,166,78,.14); }
 .setlist-pane.is-closed .setlist { overflow: hidden; opacity: 0; pointer-events: none; }
 .setlist-pane.is-closed { height: 29px; }
-.setlist-pane.is-closed .setlist-handle { transform: translate(-50%, 0); }
 .setlist-pane.is-open { height: 100%; }
 .player-view.drawer-closed .player-pane { justify-content: flex-start; }
 .lock-button.is-locked.shake { animation: lock-gradient 5s ease-in-out infinite, lock-shake .34s ease-in-out; }
