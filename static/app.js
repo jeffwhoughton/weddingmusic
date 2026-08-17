@@ -912,7 +912,7 @@ function renderPlaylists() {
     el.addEventListener("dragleave", () => el.classList.remove("drop"));
     el.addEventListener("drop", (e) => {
       e.preventDefault(); el.classList.remove("drop");
-      moveToPlaylist(p.name);
+      moveToPlaylist(p.name).catch((error) => toast(error.message));
     });
     wrap.appendChild(el);
     // Chain link indicator between linked playlists
@@ -1296,7 +1296,7 @@ songList.addEventListener("dragover", (e) => {
 songList.addEventListener("drop", (e) => {
   if (!dragSet.length) return;
   e.preventDefault();
-  reorderWithin();
+  reorderWithin().catch((error) => toast(error.message));
 });
 function clearMarkers() {
   songList.querySelectorAll(".drop-before,.drop-after")
@@ -1326,11 +1326,23 @@ async function moveToPlaylist(target) {
     .map((x) => ({ playlist: state.current, id: x.id }));
   // if the playing song is among them, follow it to the new playlist
   const movedSigs = state.items.filter((x) => dragSet.includes(x.id)).map(sigOf);
-  if (state.playing && movedSigs.includes(state.playing.sig)) {
-    state.playing.item.playlist = target;
-  }
+  const playingSongMoved = state.playing && movedSigs.includes(state.playing.sig);
   dragSet = [];
   await api("POST", "/api/move", { to_playlist: target, items });
+  if (playingSongMoved) {
+    const wasPlaying = !audio.paused;
+    const playingTime = audio.currentTime;
+    const targetData = await api("GET", `/api/playlists/${encodeURIComponent(target)}`);
+    const movedItem = targetData.items.find(
+      (item) => item.type === "song" && sigOf(item) === state.playing.sig
+    );
+    if (movedItem) {
+      state.playing.item = movedItem;
+      swapAudio(movedItem.audio_url, playingTime, wasPlaying);
+    } else {
+      state.playing.item.playlist = target;
+    }
+  }
   await loadItems();
   await loadPlaylists();
   toast(`Moved ${items.length} item${items.length === 1 ? "" : "s"} to “${target}”.`);

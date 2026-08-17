@@ -18,9 +18,12 @@ import math
 import os
 import re
 import sys
+import threading
 import uuid
 import shutil
+import time
 import unicodedata
+from contextlib import contextmanager
 from pathlib import Path
 
 from flask import (
@@ -66,6 +69,94 @@ DEFAULT_PLAYLISTS = [
 NUM_PREFIX = re.compile(r"^\s*(\d+)([a-z]*)\s*-\s*(.*)$", re.IGNORECASE | re.DOTALL)
 
 app = Flask(__name__, static_folder=None)
+
+# File ordering touches every item in a playlist. Keep audio reads and ordering
+# operations from racing one another inside this process.
+FILESYSTEM_MUTATION_LOCK = threading.RLock()
+
+
+class FileInUseError(OSError):
+    """Raised before an ordering operation when Windows will not allow a rename."""
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        super().__init__(f'“{self.path.name}” is in use by another process. Pause or close it, then try again.')
+
+
+class OrderingError(OSError):
+    """Raised when an ordering operation fails after its original names are restored."""
+
+
+@contextmanager
+def hold_files_for_rename(paths, retries=5, retry_delay=0.1):
+    """
+    On Windows, hold DELETE-access handles while an ordering operation runs.
+
+    Acquiring these handles both checks that every file is currently renameable
+    and prevents a new non-delete-sharing reader from grabbing one halfway
+    through the operation. Open files do not block renames on POSIX systems.
+    """
+    unique_paths = list(dict.fromkeys(Path(path).resolve() for path in paths))
+    if os.name != "nt":
+        yield
+        return
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    )
+    create_file.restype = wintypes.HANDLE
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+
+    delete_access = 0x00010000
+    share_all = 0x00000001 | 0x00000002 | 0x00000004
+    open_existing = 3
+    normal_attributes = 0x00000080
+    invalid_handle = ctypes.c_void_p(-1).value
+    busy_errors = {32, 33}  # ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+    handles = []
+
+    try:
+        for attempt in range(retries + 1):
+            busy_path = None
+            other_error = None
+            for path in unique_paths:
+                handle = create_file(
+                    str(path), delete_access, share_all, None,
+                    open_existing, normal_attributes, None,
+                )
+                if handle == invalid_handle:
+                    error = ctypes.get_last_error()
+                    if error in busy_errors:
+                        busy_path = path
+                    else:
+                        other_error = OSError(error, os.strerror(error), str(path))
+                    break
+                handles.append(handle)
+
+            if busy_path is None and other_error is None:
+                break
+
+            for handle in handles:
+                close_handle(handle)
+            handles.clear()
+            if other_error is not None:
+                raise other_error
+            if attempt == retries:
+                raise FileInUseError(busy_path)
+            time.sleep(retry_delay)
+
+        yield
+    finally:
+        for handle in handles:
+            close_handle(handle)
 
 
 # --------------------------------------------------------------------------- #
@@ -481,18 +572,19 @@ def apply_order(target_dir: Path, entries):
     Returns the resulting ordered filename list.
     """
     target_dir.mkdir(parents=True, exist_ok=True)
+    entries = [(middle, Path(cur)) for middle, cur in entries]
+    originals = [cur for _, cur in entries]
+    if len({path.resolve() for path in originals}) != len(originals):
+        raise OrderingError("The same file appeared more than once in an ordering operation.")
+    missing = next((path for path in originals if not path.is_file()), None)
+    if missing is not None:
+        raise OrderingError(f'“{missing.name}” disappeared before it could be moved.')
+
     token = uuid.uuid4().hex[:8]
-    staged = []
-    for i, (middle, cur) in enumerate(entries):
-        tmp = target_dir / f".stage_{token}_{i:04d}"
-        shutil.move(str(cur), str(tmp))
-        staged.append((middle, tmp))
-    
-    result = []
+    plan = []
     song_count = 0
     divider_count = 0
-    
-    for middle, tmp in staged:
+    for i, (middle, original) in enumerate(entries):
         if not middle.lower().endswith(".txt"):
             song_count += 1
             divider_count = 0
@@ -502,13 +594,48 @@ def apply_order(target_dir: Path, entries):
             if divider_count <= 26:
                 letter = chr(ord('a') + divider_count - 1)
             else:
-                letter = f"z{divider_count}" # fallback
+                letter = f"z{divider_count}"  # fallback
             prefix = f"{song_count}{letter}"
-            
-        final = target_dir / f"{prefix} - {middle}"
-        os.replace(str(tmp), str(final))
-        result.append(final.name)
-    return result
+        plan.append({
+            "original": original,
+            "stage": target_dir / f".stage_{token}_{i:04d}",
+            "final": target_dir / f"{prefix} - {middle}",
+            "current": original,
+        })
+
+    def rollback():
+        """Two-phase rollback avoids original/final name collisions."""
+        parked = []
+        for i, item in enumerate(plan):
+            current = item["current"]
+            if current == item["original"] or not current.exists():
+                continue
+            parking = target_dir / f".rollback_{token}_{i:04d}"
+            shutil.move(str(current), str(parking))
+            parked.append((parking, item["original"]))
+        for parking, original in parked:
+            original.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(parking), str(original))
+
+    with FILESYSTEM_MUTATION_LOCK, hold_files_for_rename(originals):
+        try:
+            for item in plan:
+                shutil.move(str(item["original"]), str(item["stage"]))
+                item["current"] = item["stage"]
+            for item in plan:
+                os.replace(str(item["stage"]), str(item["final"]))
+                item["current"] = item["final"]
+        except Exception as error:
+            try:
+                rollback()
+            except Exception as rollback_error:
+                app.logger.exception("Ordering failed and rollback was incomplete")
+                raise OrderingError(
+                    f"Ordering failed ({error}); restoring the original filenames also failed ({rollback_error})."
+                ) from error
+            raise OrderingError(f"Ordering failed; all original filenames were restored. {error}") from error
+
+    return [item["final"].name for item in plan]
 
 
 def renumber(playlist: str):
@@ -560,7 +687,15 @@ def api_audio(playlist, filename):
     fp = (pdir / filename)
     if not fp.exists():
         abort(404)
-    return send_file(str(fp), conditional=True)
+    # Do not stream from an open disk handle: Windows will otherwise refuse to
+    # rename a song for as long as a browser/player keeps the response open.
+    with FILESYSTEM_MUTATION_LOCK:
+        stat = fp.stat()
+        audio_data = fp.read_bytes()
+    return send_file(
+        io.BytesIO(audio_data), download_name=fp.name, conditional=True,
+        last_modified=stat.st_mtime,
+    )
 
 
 @app.get("/api/art/<path:playlist>/<path:filename>")
@@ -617,6 +752,16 @@ def api_artist_occurrences():
 #  API — mutations
 # --------------------------------------------------------------------------- #
 
+@app.errorhandler(FileInUseError)
+def handle_file_in_use(error):
+    return jsonify({"ok": False, "error": str(error)}), 423
+
+
+@app.errorhandler(OrderingError)
+def handle_ordering_error(error):
+    app.logger.warning("Playlist ordering failed: %s", error)
+    return jsonify({"ok": False, "error": str(error)}), 409
+
 @app.post("/api/reorder")
 def api_reorder():
     data = request.get_json(force=True)
@@ -656,9 +801,22 @@ def api_move():
         incoming_entries.append((strip_position(src_id), src))
         sources.add(src_pl)
 
-    apply_order(tdir, existing_entries + incoming_entries)
-    for s in sources:
-        renumber(s)
+    # Preflight and hold every affected file before changing any playlist.
+    incoming_paths = {path for _, path in incoming_entries}
+    source_entries = {}
+    for source in sources:
+        source_dir = playlist_path(source)
+        source_entries[source] = [
+            (strip_position(fn), source_dir / fn)
+            for fn in list_items(source_dir)
+            if source_dir / fn not in incoming_paths
+        ]
+    all_paths = [path for _, path in existing_entries + incoming_entries]
+    all_paths.extend(path for entries in source_entries.values() for _, path in entries)
+    with FILESYSTEM_MUTATION_LOCK, hold_files_for_rename(all_paths):
+        apply_order(tdir, existing_entries + incoming_entries)
+        for source, entries in source_entries.items():
+            apply_order(playlist_path(source), entries)
     return jsonify({"ok": True})
 
 
@@ -850,6 +1008,16 @@ def api_add_song():
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        # YouTube now requires an external JS runtime for reliable format URL
+        # extraction. Node is installed with Playlist Studio's runtime, but
+        # yt-dlp only enables it when explicitly requested.
+        "js_runtimes": {"node": {"path": None}},
+        # Avoid intermittent 403s caused by YouTube returning media URLs for
+        # an IPv6 route that differs from the route used during extraction.
+        "source_address": "0.0.0.0",
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 3,
         "writethumbnail": True,
         "postprocessors": [
             {"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "256"},
@@ -857,11 +1025,34 @@ def api_add_song():
             {"key": "EmbedThumbnail"},
         ],
     }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-    except Exception as e:
-        return jsonify({"ok": False, "error": f"Download failed: {e}"}), 500
+    def cleanup_download():
+        for leftover in pdir.glob(f".dl_{token}.*"):
+            try:
+                leftover.unlink()
+            except OSError:
+                pass
+
+    # yt-dlp retries individual HTTP requests, but a rejected media URL needs
+    # a fresh extraction to obtain a new signed URL. Retry that case once.
+    info = None
+    for attempt in range(2):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+            break
+        except Exception as e:
+            message = str(e)
+            transient = any(marker in message.lower() for marker in (
+                "http error 403", "http error 429", "timed out",
+                "remote end closed", "unable to download video data",
+            ))
+            cleanup_download()
+            if attempt == 0 and transient:
+                time.sleep(1)
+                continue
+            app.logger.warning("Song download failed: %s", message)
+            return jsonify({"ok": False,
+                            "error": f"Download failed: {message}"}), 502
 
     # Locate the produced mp3.
     produced = list(pdir.glob(f".dl_{token}.mp3"))
@@ -879,11 +1070,7 @@ def api_add_song():
     final = pdir / f"{pos} - {DEFAULT_EMOJI} - {title} - {artist}{tmp_file.suffix}"
     os.replace(str(tmp_file), str(final))
     # tidy any leftover thumbnail / temp files
-    for leftover in pdir.glob(f".dl_{token}.*"):
-        try:
-            leftover.unlink()
-        except OSError:
-            pass
+    cleanup_download()
     return jsonify({"ok": True, "item": serialize_item(playlist, final.name)})
 
 
