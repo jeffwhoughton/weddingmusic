@@ -1,2 +1,70 @@
+App fixes:
 - Fix issue with pausing or clicking away or changing "go here next" when transitioning between songs
 - cancel fade out if hitting pause again
+- Fix app lag, fix session losing position
+
+Transition fixes:
+- Bad transition on bon jovi
+- Shorten slow songs slightly
+
+Song organizations:
+- Move "I Wanna Dance with Somebody" so we're not in the Diva's too long
+- Swap bohemian rhapsody for something, putting it later in the night when the slow down is okay
+- Split up the "GIRL POWER HOUR" so it's not too much pop in one long go
+- Increase the length between our slow song slow downs
+- Dump any extra songs into pizza party, which is fine to extend
+- Pull some key songs from Pizza Party into Wedding Reception, as noted below
+- Bring up a country sections
+
+Options to pull in from Pizza Party:
+- September
+- One Way Or Another
+- Let's Dance
+- Sweet Dreams
+- One More Time
+- Dog Days Are Over
+- Feel It Still
+- 500 Miles
+- Wagon Wheel
+- Golden
+
+Optional songs to add into Wedding Reception or Pizza Party:
+American Pie - Don McLean
+Signed, Sealed, Delivered (I'm Yours) - Stevie Wonder
+I Want You Back - The Jackson 5
+Twist and Shout - The Beatles
+Shout - The Isley Brothers
+Build Me Up Buttercup - The Foundations
+Celebration - Kool & The Gang
+We Are Family - Sister Sledge
+YMCA - Village People
+Beat It - Michael Jackson
+The Best - Tina Turner
+Free Fallin' - Tom Petty
+Jump Around - House of Pain
+Gangsta's Paradise - Coolio
+U Can't Touch This - MC Hammer
+Push It - Salt-N-Pepa
+Don't Stop the Music - Rihanna
+Pour Some Sugar on Me - Def Leppard
+Sweet Child o' Mine - Guns N' Roses
+Like a Prayer - Madonna
+Footloose - Kenny Loggins
+APT. - ROSÉ & Bruno Mars
+Pink Pony Club - Chappell Roan
+Take Me Home, Country Roads - John Denver
+Friends in Low Places - Garth Brooks
+Hey Jude - The Beatles
+Bobcaygeon - The Tragically Hip
+Since You've Been Gone - Kelly Clarkson
+
+
+Signed, Sealed, Delivered — Stevie Wonder (great lift out of Always Remember Us This Way, and the lyric fits the day)
+I Want You Back — Jackson 5
+Build Me Up Buttercup — The Foundations
+Twist and Shout — The Beatles
+We Are Family — Sister Sledge
+Celebration — Kool & The Gang
+YMCA — Village People
+It's Raining Men — Geri Halliwell (the one survivor — pivots the camp forward)
+Man! I Feel Like A Woman! — Shania Twain (bridge into Classic Rock Singalong)
