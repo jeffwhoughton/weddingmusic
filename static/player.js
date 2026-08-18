@@ -4,7 +4,9 @@ const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
 const TRACK_CACHE_PREFIX = "track:";
+const ARTWORK_CACHE_PREFIX = "artwork:";
 const MAX_CACHED_TRACKS = 4;
+const ARTWORK_THUMBNAIL_SIZE = 160;
 const LOCK_PASSWORD = "1235";
 const LOCK_TIMEOUT_MS = 30_000;
 const SHORTENED_DURATION_CACHE = "playlist-studio-shortened-durations";
@@ -67,6 +69,12 @@ let lastPlaybackCheckpoint = 0;
 let lastMediaPositionUpdate = 0;
 let playRequestToken = 0;
 let archiveZipPromise = null;
+let artworkObserver = null;
+let artworkQueue = [];
+let artworkQueued = new Set();
+let artworkQueueRunning = false;
+let artworkGroupToken = 0;
+let artworkApiAvailable = null;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (seconds) => {
@@ -324,6 +332,29 @@ async function writeCachedTrack(item, blob) {
     };
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
+  });
+}
+
+function artworkCacheKey(item) {
+  return `${ARTWORK_CACHE_PREFIX}${itemKey(item)}`;
+}
+
+async function readCachedArtwork(item) {
+  const db = await openCacheDb();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(CACHE_STORE, "readonly").objectStore(CACHE_STORE).get(artworkCacheKey(item));
+    request.onsuccess = () => resolve(request.result?.blob || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function writeCachedArtwork(item, blob) {
+  const db = await openCacheDb();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(CACHE_STORE, "readwrite").objectStore(CACHE_STORE)
+      .put({ kind: "artwork", blob, savedAt: Date.now() }, artworkCacheKey(item));
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
   });
 }
 
@@ -659,16 +690,87 @@ async function loadItemMetadataInternal(item) {
   return item;
 }
 
+async function createArtworkThumbnail(sourceBlob) {
+  const bitmap = await createImageBitmap(sourceBlob);
+  try {
+    const sourceSize = Math.min(bitmap.width, bitmap.height);
+    const sourceX = Math.max(0, (bitmap.width - sourceSize) / 2);
+    const sourceY = Math.max(0, (bitmap.height - sourceSize) / 2);
+    let thumbnail;
+    if (window.OffscreenCanvas) {
+      const canvas = new OffscreenCanvas(ARTWORK_THUMBNAIL_SIZE, ARTWORK_THUMBNAIL_SIZE);
+      canvas.getContext("2d", { alpha: false }).drawImage(
+        bitmap, sourceX, sourceY, sourceSize, sourceSize,
+        0, 0, ARTWORK_THUMBNAIL_SIZE, ARTWORK_THUMBNAIL_SIZE,
+      );
+      thumbnail = await canvas.convertToBlob({ type: "image/webp", quality: .8 });
+    } else {
+      const canvas = document.createElement("canvas");
+      canvas.width = ARTWORK_THUMBNAIL_SIZE;
+      canvas.height = ARTWORK_THUMBNAIL_SIZE;
+      canvas.getContext("2d", { alpha: false }).drawImage(
+        bitmap, sourceX, sourceY, sourceSize, sourceSize,
+        0, 0, ARTWORK_THUMBNAIL_SIZE, ARTWORK_THUMBNAIL_SIZE,
+      );
+      thumbnail = await new Promise((resolve) => canvas.toBlob(resolve, "image/webp", .8));
+    }
+    return thumbnail || sourceBlob;
+  } finally {
+    bitmap.close?.();
+  }
+}
+
+async function fetchArtworkSource(item) {
+  if (artworkApiAvailable !== false && navigator.onLine !== false) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 3000);
+    try {
+      const response = await fetch(`/api/art/${encodeURIComponent(item.folder)}/${encodeURIComponent(item.filename)}`, {
+        cache: "no-store",
+        credentials: "same-origin",
+        signal: controller.signal,
+      });
+      if (response.status === 204) {
+        artworkApiAvailable = true;
+        return null;
+      }
+      if (response.ok) {
+        const blob = await response.blob();
+        if (blob.type.startsWith("image/") && blob.size) {
+          artworkApiAvailable = true;
+          return blob;
+        }
+      } else if (response.status === 404) {
+        artworkApiAvailable = false;
+      }
+    } catch (_) {
+      artworkApiAvailable = false;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  await ensureBlob(item);
+  const tags = await loadTags(item);
+  const pictureTag = tags?.picture || tags?.APIC || tags?.covr;
+  return pictureTag?.data?.length
+    ? new Blob([new Uint8Array(pictureTag.data)], { type: pictureTag.format || pictureTag.mime || "image/jpeg" })
+    : null;
+}
+
 async function loadItemArtwork(item) {
   if (item.artworkLoaded) return item;
   if (!item.artworkPromise) {
     item.artworkPromise = (async () => {
-      await ensureBlob(item);
-      const tags = await loadTags(item);
-      const pictureTag = tags?.picture || tags?.APIC || tags?.covr;
-      if (pictureTag?.data?.length) {
-        item.artBlob = new Blob([new Uint8Array(pictureTag.data)], { type: pictureTag.format || pictureTag.mime || "image/jpeg" });
+      let thumbnail = await readCachedArtwork(item).catch(() => null);
+      if (!thumbnail) {
+        const source = await fetchArtworkSource(item);
+        if (source) {
+          thumbnail = await createArtworkThumbnail(source).catch(() => source);
+          writeCachedArtwork(item, thumbnail).catch(() => {});
+        }
       }
+      item.artBlob = thumbnail;
       item.artworkLoaded = true;
       ensureArtUrl(item);
       return item;
@@ -691,6 +793,83 @@ function releaseItemResources(item) {
   item.blob = null;
   item.blobCacheSaved = false;
   item.tagsPromise = null;
+}
+
+function releaseItemArtwork(item) {
+  if (!item) return;
+  if (item.artUrl) {
+    URL.revokeObjectURL(item.artUrl);
+    state.urls.delete(item.artUrl);
+  }
+  item.artUrl = null;
+  item.artBlob = null;
+  item.artworkLoaded = false;
+}
+
+function resetArtworkLoader(previousGroup = null) {
+  artworkObserver?.disconnect();
+  artworkObserver = null;
+  artworkQueue = [];
+  artworkQueued.clear();
+  artworkGroupToken++;
+  if (previousGroup) {
+    for (const item of previousGroup.songs) {
+      releaseItemArtwork(item);
+      item.artworkPromise?.then(() => {
+        if (!state.selectedGroup?.songs.includes(item)) releaseItemArtwork(item);
+      }, () => {});
+    }
+  }
+}
+
+async function processArtworkQueue() {
+  if (artworkQueueRunning) return;
+  artworkQueueRunning = true;
+  while (artworkQueue.length) {
+    const { item, token } = artworkQueue.shift();
+    artworkQueued.delete(itemKey(item));
+    try {
+      await loadItemArtwork(item);
+      if (token !== artworkGroupToken || !state.selectedGroup?.songs.includes(item)) {
+        releaseItemArtwork(item);
+        continue;
+      }
+      updateSetlistRow(item);
+      if (state.current === item) updatePlayer();
+      if (getNextSong() === item) updateUpNext();
+    } catch (_) {}
+    if (item !== state.current && item !== state.queuedNext && item !== getNextSong()) releaseItemResources(item);
+    await yieldToBrowser();
+  }
+  artworkQueueRunning = false;
+}
+
+function enqueueArtwork(item) {
+  const key = itemKey(item);
+  if (item.artworkLoaded || artworkQueued.has(key)) return;
+  artworkQueued.add(key);
+  artworkQueue.push({ item, token: artworkGroupToken });
+  processArtworkQueue();
+}
+
+function observeSetlistArtwork(group) {
+  artworkObserver?.disconnect();
+  const images = [...$("setlist").querySelectorAll(".song-art[data-art-song]")];
+  if (!window.IntersectionObserver) {
+    for (const image of images) enqueueArtwork(group.songs[Number(image.dataset.artSong)]);
+    return;
+  }
+  artworkObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      artworkObserver.unobserve(entry.target);
+      enqueueArtwork(group.songs[Number(entry.target.dataset.artSong)]);
+    }
+  }, { root: $("setlist"), rootMargin: "320px 0px" });
+  for (const image of images) {
+    const item = group.songs[Number(image.dataset.artSong)];
+    if (!item?.artworkLoaded) artworkObserver.observe(image);
+  }
 }
 
 function setImage(image, url) {
@@ -785,7 +964,7 @@ function renderSetlist() {
       const queueButton = itemIndex > state.currentIndex
         ? `<button class="song-queue-next${queueActive}" data-queue-song="${item.globalIndex}" title="Go here next" aria-label="Go here next">↩</button>`
         : "";
-      html.push(`<div class="song-row${current}${skipped}" data-song="${item.globalIndex}"><span class="song-number">${item.globalIndex + 1}</span><img class="song-art"${art ? ` src="${art}"` : ""} alt=""><span class="song-meta"><span class="song-name">${esc(item.name)}</span><span class="song-artist">${esc(item.artist)}</span></span>${queueButton}<span class="song-times"><span class="song-duration">${duration}</span><span class="song-short-duration">${shortened}</span></span></div>`);
+      html.push(`<div class="song-row${current}${skipped}" data-song="${item.globalIndex}"><span class="song-number">${item.globalIndex + 1}</span><img class="song-art" data-art-song="${item.globalIndex}" loading="lazy" decoding="async"${art ? ` src="${art}"` : ""} alt=""><span class="song-meta"><span class="song-name">${esc(item.name)}</span><span class="song-artist">${esc(item.artist)}</span></span>${queueButton}<span class="song-times"><span class="song-duration">${duration}</span><span class="song-short-duration">${shortened}</span></span></div>`);
       elapsedSeconds += Math.max(0, outPoint - inPoint);
     }
   }
@@ -797,6 +976,7 @@ function renderSetlist() {
     event.stopPropagation();
     setQueuedNext(group.songs[Number(button.dataset.queueSong)]);
   }));
+  observeSetlistArtwork(group);
   updateScrollPip();
 }
 
@@ -1210,7 +1390,9 @@ async function selectGroup(id, { prepareInitial = true } = {}) {
   const group = state.groups.find((candidate) => candidate.id === id);
   if (!group) return;
   playRequestToken++;
+  const previousGroup = state.selectedGroup;
   const previous = state.current;
+  resetArtworkLoader(previousGroup && previousGroup !== group ? previousGroup : null);
   abortTransition();
   state.fading = false;
   state.fadePaused = null;

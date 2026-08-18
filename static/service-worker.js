@@ -1,4 +1,4 @@
-const CACHE_NAME = "playlist-studio-player-v6";
+const CACHE_NAME = "playlist-studio-player-v7";
 const APP_SHELL = [
   "./player.html",
   "./player.css",
@@ -11,6 +11,7 @@ const CACHEABLE_EXTERNAL_HOSTS = new Set([
   "cdnjs.cloudflare.com",
   "accounts.google.com",
 ]);
+const APP_SHELL_URLS = new Set(APP_SHELL.map((path) => new URL(path, self.location).href));
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -35,7 +36,8 @@ self.addEventListener("fetch", (event) => {
   const url = new URL(request.url);
   const sameOrigin = url.origin === self.location.origin;
   const externalScript = CACHEABLE_EXTERNAL_HOSTS.has(url.hostname);
-  if (!sameOrigin && !externalScript) return;
+  const appShellRequest = sameOrigin && APP_SHELL_URLS.has(url.href);
+  if (!appShellRequest && !externalScript) return;
 
   event.respondWith(
     caches.match(request).then((cached) => {
