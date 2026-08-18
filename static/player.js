@@ -54,7 +54,16 @@ let audioA = document.getElementById("audio-a");
 let audioB = document.getElementById("audio-b");
 let audioContext = null;
 const audioGraphs = new Map();
-const transition = { active: false, timer: null, rateTimer: null, duration: 5 };
+const transition = {
+  active: false,
+  completionCue: null,
+  duration: 5,
+  token: 0,
+  outgoing: null,
+  previousItem: null,
+  rateListener: null,
+  retryAt: 0,
+};
 let toastTimer;
 let driveAccessToken = null;
 let driveTokenExpiresAt = 0;
@@ -63,7 +72,7 @@ let lockTimeout = null;
 let menuCloseTimer = null;
 let artSwapToken = 0;
 let artSwapCleanup = null;
-let fadeTimer = null;
+let fadeCue = null;
 let metadataCache = {};
 let metadataCacheTimer = null;
 let lastPlaybackCheckpoint = 0;
@@ -89,6 +98,10 @@ const esc = (value) => String(value ?? "").replace(/[&<>\"]/g, (char) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
 }[char]));
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const withTimeout = (promise, timeoutMs, message) => new Promise((resolve, reject) => {
+  const timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+  Promise.resolve(promise).then(resolve, reject).finally(() => clearTimeout(timeout));
+});
 const yieldToBrowser = () => new Promise((resolve) => {
   if (window.requestIdleCallback) window.requestIdleCallback(resolve, { timeout: 1000 });
   else setTimeout(resolve, 50);
@@ -361,6 +374,24 @@ async function writeCachedArtwork(item, blob) {
   });
 }
 
+async function readCachedArtworkKeys() {
+  const db = await openCacheDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(CACHE_STORE, "readonly");
+    const store = transaction.objectStore(CACHE_STORE);
+    const range = IDBKeyRange.bound(ARTWORK_CACHE_PREFIX, `${ARTWORK_CACHE_PREFIX}\uffff`);
+    const request = store.openKeyCursor(range);
+    const keys = new Set();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(keys); return; }
+      keys.add(String(cursor.key));
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error);
+  });
+}
+
 function readPreparedArtworkGroups() {
   try {
     const cached = JSON.parse(localStorage.getItem(ARTWORK_GROUP_CACHE) || "{}");
@@ -372,34 +403,20 @@ function readPreparedArtworkGroups() {
 
 function savePreparedArtworkGroup(group, imageCount) {
   const cached = readPreparedArtworkGroups();
-  cached[group.id] = imageCount;
+  cached[group.id] = { songCount: group.songs.length, imageCount };
   try { localStorage.setItem(ARTWORK_GROUP_CACHE, JSON.stringify(cached)); } catch (_) {}
 }
 
-async function hydrateGroupArtworkCache(group) {
-  const wanted = new Map(group.songs.map((item) => [artworkCacheKey(item), item]));
-  const db = await openCacheDb();
-  const hydrated = await new Promise((resolve, reject) => {
-    const transaction = db.transaction(CACHE_STORE, "readonly");
-    const store = transaction.objectStore(CACHE_STORE);
-    const range = IDBKeyRange.bound(ARTWORK_CACHE_PREFIX, `${ARTWORK_CACHE_PREFIX}\uffff`);
-    const request = store.openCursor(range);
-    let count = 0;
-    request.onsuccess = () => {
-      const cursor = request.result;
-      if (!cursor) { resolve(count); return; }
-      const item = wanted.get(String(cursor.key));
-      if (item && cursor.value?.blob) {
-        item.artBlob = cursor.value.blob;
-        item.artworkLoaded = true;
-        ensureArtUrl(item);
-        count++;
-      }
-      cursor.continue();
-    };
-    request.onerror = () => reject(request.error);
-  }).catch(() => 0);
-  return hydrated;
+function getPreparedArtworkGroup(group, preparedGroups = readPreparedArtworkGroups()) {
+  const saved = preparedGroups[group.id];
+  if (Number.isFinite(Number(saved))) {
+    return { songCount: null, imageCount: Number(saved) };
+  }
+  const songCount = Number(saved?.songCount);
+  const imageCount = Number(saved?.imageCount);
+  return Number.isFinite(songCount) && Number.isFinite(imageCount)
+    ? { songCount, imageCount }
+    : null;
 }
 
 function setDownloadStatus(message, progress = null) {
@@ -823,6 +840,70 @@ async function loadItemArtwork(item) {
   return item.artworkPromise;
 }
 
+async function cacheArtworkThumbnail(item) {
+  const source = await fetchArtworkSource(item);
+  if (!source) return false;
+  const thumbnail = await createArtworkThumbnail(source).catch(() => source);
+  await writeCachedArtwork(item, thumbnail);
+  return true;
+}
+
+async function prepareInitialArtworkCache() {
+  const preparedGroups = readPreparedArtworkGroups();
+  const cachedKeys = await readCachedArtworkKeys().catch(() => new Set());
+  const groupsToPrepare = state.groups.filter((group) => {
+    const prepared = getPreparedArtworkGroup(group, preparedGroups);
+    const cachedImages = group.songs.reduce(
+      (count, item) => count + Number(cachedKeys.has(artworkCacheKey(item))),
+      0,
+    );
+    return !prepared
+      || prepared.songCount !== group.songs.length
+      || cachedImages < prepared.imageCount;
+  });
+  if (!groupsToPrepare.length) return;
+
+  const pendingByGroup = new Map(groupsToPrepare.map((group) => [
+    group,
+    group.songs.filter((item) => !cachedKeys.has(artworkCacheKey(item))),
+  ]));
+  const total = Array.from(pendingByGroup.values()).reduce((sum, items) => sum + items.length, 0);
+  let completed = 0;
+  showPreparationStatus("Preparing artwork for offline use…", 0);
+
+  for (const group of groupsToPrepare) {
+    const pending = pendingByGroup.get(group);
+    let cursor = 0;
+    let failed = false;
+    const worker = async () => {
+      while (cursor < pending.length) {
+        const item = pending[cursor++];
+        try {
+          if (await cacheArtworkThumbnail(item)) cachedKeys.add(artworkCacheKey(item));
+        } catch (_) {
+          failed = true;
+        } finally {
+          releaseItemResources(item);
+        }
+        completed++;
+        setDownloadStatus(
+          `Preparing ${group.name} artwork… ${completed}/${Math.max(1, total)}`,
+          completed / Math.max(1, total),
+        );
+        await yieldToBrowser();
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(2, pending.length) }, worker));
+    if (!failed) {
+      const imageCount = group.songs.reduce(
+        (count, item) => count + Number(cachedKeys.has(artworkCacheKey(item))),
+        0,
+      );
+      savePreparedArtworkGroup(group, imageCount);
+    }
+  }
+}
+
 function showPreparationStatus(message, progress = 0) {
   $("google-signin-button").hidden = true;
   $("download-retry").hidden = true;
@@ -833,39 +914,63 @@ function showPreparationStatus(message, progress = 0) {
 
 async function prepareGroupArtwork(group) {
   const preparedGroups = readPreparedArtworkGroups();
-  const expectedImages = Number.isFinite(Number(preparedGroups[group.id]))
-    ? Number(preparedGroups[group.id])
-    : null;
-  const hydratedImages = await hydrateGroupArtworkCache(group);
-  if (expectedImages !== null && hydratedImages >= expectedImages) {
-    for (const item of group.songs) item.artworkLoaded = true;
+  const prepared = getPreparedArtworkGroup(group, preparedGroups);
+  const expectedImages = prepared?.songCount === group.songs.length ? prepared.imageCount : null;
+  const cachedKeys = await readCachedArtworkKeys().catch(() => new Set());
+  const cachedImages = group.songs.reduce(
+    (count, item) => count + Number(cachedKeys.has(artworkCacheKey(item))),
+    0,
+  );
+  if (expectedImages !== null && cachedImages >= expectedImages) {
+    for (const item of group.songs) {
+      if (cachedKeys.has(artworkCacheKey(item))) {
+        if (!item.artBlob) item.artworkLoaded = false;
+      } else {
+        item.artworkLoaded = true;
+      }
+    }
     return;
   }
 
   showPreparationStatus(`Preparing ${group.name} artwork…`, 0);
-  const pending = group.songs.filter((item) => !item.artworkLoaded);
+  const pending = group.songs.filter((item) => !cachedKeys.has(artworkCacheKey(item)));
   let cursor = 0;
-  let completed = group.songs.length - pending.length;
+  let completed = cachedImages;
   let failed = false;
+  const failedItems = new Set();
   const worker = async () => {
     while (cursor < pending.length) {
       const item = pending[cursor++];
       try {
-        await loadItemArtwork(item);
+        if (await cacheArtworkThumbnail(item)) cachedKeys.add(artworkCacheKey(item));
       } catch (_) {
         failed = true;
+        failedItems.add(item);
       }
       completed++;
       setDownloadStatus(
         `Preparing ${group.name} artwork… ${completed}/${group.songs.length}`,
         completed / Math.max(1, group.songs.length),
       );
-      if (item !== state.current && item !== state.queuedNext && item !== getNextSong()) releaseItemResources(item);
+      releaseItemResources(item);
       await yieldToBrowser();
     }
   };
-  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, worker));
-  if (!failed) savePreparedArtworkGroup(group, group.songs.filter((item) => item.artBlob).length);
+  await Promise.all(Array.from({ length: Math.min(2, pending.length) }, worker));
+  for (const item of group.songs) {
+    if (cachedKeys.has(artworkCacheKey(item))) {
+      if (!item.artBlob) item.artworkLoaded = false;
+    } else {
+      item.artworkLoaded = !failedItems.has(item);
+    }
+  }
+  if (!failed) {
+    const imageCount = group.songs.reduce(
+      (count, item) => count + Number(cachedKeys.has(artworkCacheKey(item))),
+      0,
+    );
+    savePreparedArtworkGroup(group, imageCount);
+  }
 }
 
 function ensureArtUrl(item) {
@@ -1598,6 +1703,28 @@ function initAudioGraph() {
   if (audioContext.state === "suspended") audioContext.resume();
 }
 
+function scheduleAudioClockCue(delaySeconds, callback) {
+  const source = audioContext.createOscillator();
+  const silentGain = audioContext.createGain();
+  let active = true;
+  silentGain.gain.value = 0;
+  source.connect(silentGain).connect(audioContext.destination);
+  source.addEventListener("ended", () => {
+    source.disconnect();
+    silentGain.disconnect();
+    if (active) callback();
+  }, { once: true });
+  source.start();
+  source.stop(audioContext.currentTime + Math.max(0, delaySeconds));
+  return {
+    cancel() {
+      if (!active) return;
+      active = false;
+      try { source.stop(); } catch (_) {}
+    },
+  };
+}
+
 function computeTransitionDuration(item) {
   const duration = item?.duration || 0;
   const base = Math.max(6, Math.min(16, duration * .06));
@@ -1605,12 +1732,16 @@ function computeTransitionDuration(item) {
 }
 
 function abortTransition(preserveCurrentGain = false) {
-  if (transition.timer) clearTimeout(transition.timer);
-  if (transition.rateTimer) clearInterval(transition.rateTimer);
-  if (fadeTimer) clearTimeout(fadeTimer);
-  transition.timer = null;
-  transition.rateTimer = null;
-  fadeTimer = null;
+  transition.token++;
+  transition.completionCue?.cancel();
+  transition.completionCue = null;
+  if (transition.outgoing && transition.rateListener) {
+    transition.outgoing.removeEventListener("timeupdate", transition.rateListener);
+  }
+  transition.rateListener = null;
+  transition.outgoing = null;
+  fadeCue?.cancel();
+  fadeCue = null;
   transition.active = false;
   $("player-view").classList.remove("is-transitioning");
   if (audioContext) {
@@ -1630,111 +1761,145 @@ function abortTransition(preserveCurrentGain = false) {
   audioB.pause();
   audioB.removeAttribute("src");
   audioA.playbackRate = 1;
+  audioB.playbackRate = 1;
+  if (transition.previousItem) releaseItemResources(transition.previousItem);
+  transition.previousItem = null;
 }
 
 async function startTransition() {
-  if (transition.active || !state.current) return;
+  if (transition.active || !state.current || performance.now() < transition.retryAt) return;
   const next = getNextSong();
   if (!next) return;
+  const outgoingItem = state.current;
+  const outgoingAudio = audioA;
+  const incomingAudio = audioB;
+  const token = ++transition.token;
   transition.active = true;
   $("player-view").classList.add("is-transitioning");
-  transition.duration = computeTransitionDuration(state.current);
+  transition.duration = computeTransitionDuration(outgoingItem);
   initAudioGraph();
-  await ensureBlob(next, true);
-  await loadItemMetadata(next);
-  if (!transition.active) return;
-  audioB.src = ensureUrl(next);
-  audioB.load();
-  await new Promise((resolve) => {
-    if (audioB.readyState >= 1) { resolve(); return; }
-    audioB.addEventListener("loadedmetadata", resolve, { once: true });
-    audioB.addEventListener("error", resolve, { once: true });
-  });
-  await seekToInPoint(audioB, next);
-  if (!transition.active) return;
-  audioB.playbackRate = 1;
-  await audioB.play().catch(() => {});
-  const now = audioContext.currentTime;
-  const currentGraph = audioGraphs.get(audioA);
-  const nextGraph = audioGraphs.get(audioB);
-  const currentGain = currentGraph.gain.gain;
-  const nextGain = nextGraph.gain.gain;
-  const currentFilter = currentGraph.filter.frequency;
-  const nextFilter = nextGraph.filter.frequency;
-  const currentItem = state.current;
-  const hasLongOutro = currentItem.longOutro;
-  const hasQuickIntro = next.quickIntro;
-  const extra = hasLongOutro ? currentItem.longOutroSeconds : 0;
-  const bpmA = currentItem.manualBpm;
-  const bpmB = next.manualBpm;
-  const bpmRateExtra = currentItem.bpmOutro && bpmA && bpmB
-    ? Math.max(.75, Math.min(1.25, bpmB / bpmA)) - 1
-    : .09;
-
-  currentGraph.filter.type = "highpass";
-  nextGraph.filter.type = "lowpass";
-  currentGain.cancelScheduledValues(now);
-  nextGain.cancelScheduledValues(now);
-  currentFilter.cancelScheduledValues(now);
-  nextFilter.cancelScheduledValues(now);
-  currentGain.setValueAtTime(1, now);
-  nextGain.setValueAtTime(0, now);
-  currentFilter.setValueAtTime(20, now);
-  nextFilter.setValueAtTime(hasQuickIntro ? 20000 : 280, now);
-
-  const cut = Math.min(transition.duration, 4);
-  const outgoingEnd = hasQuickIntro
-    ? (hasLongOutro ? cut + extra : cut * .8)
-    : transition.duration + extra;
-  if (hasQuickIntro) {
-    currentFilter.exponentialRampToValueAtTime(hasLongOutro ? 400 : 300, now + cut);
-    currentFilter.exponentialRampToValueAtTime(hasLongOutro ? 3500 : 5000, now + outgoingEnd);
-    currentGain.linearRampToValueAtTime(hasLongOutro ? .38 : .18, now + cut);
-    currentGain.linearRampToValueAtTime(0, now + outgoingEnd);
-    nextGain.linearRampToValueAtTime(.45, now + .3);
-    nextGain.linearRampToValueAtTime(.85, now + 1.2);
-    nextGain.linearRampToValueAtTime(1, now + 2);
-  } else {
-    currentFilter.exponentialRampToValueAtTime(hasLongOutro ? 350 : 500, now + transition.duration * .55);
-    currentFilter.exponentialRampToValueAtTime(3500, now + outgoingEnd);
-    currentGain.linearRampToValueAtTime(hasLongOutro ? .55 : .5, now + transition.duration * .6);
-    currentGain.linearRampToValueAtTime(hasLongOutro ? .28 : 0, now + transition.duration);
-    currentGain.linearRampToValueAtTime(0, now + outgoingEnd);
-    nextFilter.exponentialRampToValueAtTime(2200, now + transition.duration * .5);
-    nextFilter.exponentialRampToValueAtTime(20000, now + transition.duration * .78);
-    nextGain.linearRampToValueAtTime(.35, now + transition.duration * .38);
-    nextGain.linearRampToValueAtTime(.75, now + transition.duration * .68);
-    nextGain.linearRampToValueAtTime(1, now + transition.duration * .9);
-  }
-
-  const rateStart = Date.now();
-  const rateDuration = (hasQuickIntro ? outgoingEnd : transition.duration + extra * .5) * 1000;
-  transition.rateTimer = setInterval(() => {
-    const elapsed = Date.now() - rateStart;
-    if (elapsed >= rateDuration || !transition.active) {
-      clearInterval(transition.rateTimer);
-      transition.rateTimer = null;
+  try {
+    await withTimeout((async () => {
+      await ensureBlob(next, true);
+      await loadItemMetadata(next);
+    })(), 20000, "Next track preparation timed out.");
+    if (!transition.active || token !== transition.token) return;
+    incomingAudio.src = ensureUrl(next);
+    incomingAudio.load();
+    await withTimeout(new Promise((resolve, reject) => {
+      if (incomingAudio.readyState >= 1) { resolve(); return; }
+      incomingAudio.addEventListener("loadedmetadata", resolve, { once: true });
+      incomingAudio.addEventListener("error", () => reject(incomingAudio.error || new Error("Next track could not load.")), { once: true });
+    }), 8000, "Next track metadata timed out.");
+    await seekToInPoint(incomingAudio, next);
+    if (!transition.active || token !== transition.token) return;
+    incomingAudio.playbackRate = 1;
+    await withTimeout(incomingAudio.play(), 5000, "Next track playback timed out.");
+    if (!transition.active || token !== transition.token) {
+      incomingAudio.pause();
       return;
     }
-    audioA.playbackRate = 1 + (elapsed / rateDuration) * bpmRateExtra;
-  }, 100);
 
-  const completionMs = (hasQuickIntro ? cut : transition.duration) * 1000 + extra * 1000;
-  transition.timer = setTimeout(() => completeTransition(next), completionMs);
+    const now = audioContext.currentTime;
+    const currentGraph = audioGraphs.get(outgoingAudio);
+    const nextGraph = audioGraphs.get(incomingAudio);
+    const currentGain = currentGraph.gain.gain;
+    const nextGain = nextGraph.gain.gain;
+    const currentFilter = currentGraph.filter.frequency;
+    const nextFilter = nextGraph.filter.frequency;
+    const hasLongOutro = outgoingItem.longOutro;
+    const hasQuickIntro = next.quickIntro;
+    const extra = hasLongOutro ? outgoingItem.longOutroSeconds : 0;
+    const bpmA = outgoingItem.manualBpm;
+    const bpmB = next.manualBpm;
+    const bpmRateExtra = outgoingItem.bpmOutro && bpmA && bpmB
+      ? Math.max(.75, Math.min(1.25, bpmB / bpmA)) - 1
+      : .09;
+
+    currentGraph.filter.type = "highpass";
+    nextGraph.filter.type = "lowpass";
+    currentGain.cancelScheduledValues(now);
+    nextGain.cancelScheduledValues(now);
+    currentFilter.cancelScheduledValues(now);
+    nextFilter.cancelScheduledValues(now);
+    currentGain.setValueAtTime(1, now);
+    nextGain.setValueAtTime(0, now);
+    currentFilter.setValueAtTime(20, now);
+    nextFilter.setValueAtTime(hasQuickIntro ? 20000 : 280, now);
+
+    const cut = Math.min(transition.duration, 4);
+    const outgoingEnd = hasQuickIntro
+      ? (hasLongOutro ? cut + extra : cut * .8)
+      : transition.duration + extra;
+    if (hasQuickIntro) {
+      currentFilter.exponentialRampToValueAtTime(hasLongOutro ? 400 : 300, now + cut);
+      currentFilter.exponentialRampToValueAtTime(hasLongOutro ? 3500 : 5000, now + outgoingEnd);
+      currentGain.linearRampToValueAtTime(hasLongOutro ? .38 : .18, now + cut);
+      currentGain.linearRampToValueAtTime(0, now + outgoingEnd);
+      nextGain.linearRampToValueAtTime(.45, now + .3);
+      nextGain.linearRampToValueAtTime(.85, now + 1.2);
+      nextGain.linearRampToValueAtTime(1, now + 2);
+    } else {
+      currentFilter.exponentialRampToValueAtTime(hasLongOutro ? 350 : 500, now + transition.duration * .55);
+      currentFilter.exponentialRampToValueAtTime(3500, now + outgoingEnd);
+      currentGain.linearRampToValueAtTime(hasLongOutro ? .55 : .5, now + transition.duration * .6);
+      currentGain.linearRampToValueAtTime(hasLongOutro ? .28 : 0, now + transition.duration);
+      currentGain.linearRampToValueAtTime(0, now + outgoingEnd);
+      nextFilter.exponentialRampToValueAtTime(2200, now + transition.duration * .5);
+      nextFilter.exponentialRampToValueAtTime(20000, now + transition.duration * .78);
+      nextGain.linearRampToValueAtTime(.35, now + transition.duration * .38);
+      nextGain.linearRampToValueAtTime(.75, now + transition.duration * .68);
+      nextGain.linearRampToValueAtTime(1, now + transition.duration * .9);
+    }
+
+    const rateDuration = Math.max(.1, hasQuickIntro ? outgoingEnd : transition.duration + extra * .5);
+    transition.outgoing = outgoingAudio;
+    transition.rateListener = () => {
+      if (!transition.active || token !== transition.token) return;
+      const progress = Math.max(0, Math.min(1, (audioContext.currentTime - now) / rateDuration));
+      outgoingAudio.playbackRate = 1 + progress * bpmRateExtra;
+    };
+    outgoingAudio.addEventListener("timeupdate", transition.rateListener);
+    transition.previousItem = outgoingItem;
+    transition.retryAt = 0;
+
+    const previousArtUrl = ensureArtUrl(outgoingItem) || getDisplayedArtUrl();
+    audioA = incomingAudio;
+    audioB = outgoingAudio;
+    attachAudioListeners();
+    state.current = next;
+    state.currentIndex = state.songs.indexOf(next);
+    if (state.queuedNext === next) clearQueuedNext();
+    animatePlayerArt(next, previousArtUrl);
+    preloadTransitionMetadata(next);
+    renderSetlist();
+    updatePlayer();
+    onAudioTimeUpdate();
+    scrollToCurrentSong();
+    persistPlaybackState(true);
+
+    const completionSeconds = (hasQuickIntro ? cut : transition.duration) + extra;
+    transition.completionCue = scheduleAudioClockCue(completionSeconds, () => completeTransition(token));
+  } catch (error) {
+    if (token !== transition.token) return;
+    const outgoingEnded = outgoingAudio.ended;
+    abortTransition();
+    transition.retryAt = performance.now() + 1500;
+    console.warn("Automatic transition failed; keeping the current track.", error);
+    if (outgoingEnded) playSong(next, true).catch(() => toast("The next track could not start."));
+  }
 }
 
-function completeTransition(next) {
-  if (!transition.active) return;
-  const previous = state.current;
-  const previousArtUrl = previous ? ensureArtUrl(previous) || getDisplayedArtUrl() : "";
+function completeTransition(token) {
+  if (!transition.active || token !== transition.token) return;
   transition.active = false;
   $("player-view").classList.remove("is-transitioning");
-  transition.timer = null;
-  if (transition.rateTimer) clearInterval(transition.rateTimer);
-  transition.rateTimer = null;
-  const oldAudio = audioA;
-  audioA = audioB;
-  audioB = oldAudio;
+  transition.completionCue = null;
+  if (transition.outgoing && transition.rateListener) {
+    transition.outgoing.removeEventListener("timeupdate", transition.rateListener);
+  }
+  transition.rateListener = null;
+  transition.outgoing = null;
   audioB.pause();
   audioB.removeAttribute("src");
   audioB.playbackRate = 1;
@@ -1751,16 +1916,8 @@ function completeTransition(next) {
   oldGraph.filter.type = "lowpass";
   oldGraph.filter.frequency.cancelScheduledValues(now);
   oldGraph.filter.frequency.setValueAtTime(280, now);
-  attachAudioListeners();
-  state.current = next;
-  state.currentIndex = state.songs.indexOf(next);
-  if (state.queuedNext === next) clearQueuedNext();
-  animatePlayerArt(next, previousArtUrl, () => releaseItemResources(previous));
-  preloadTransitionMetadata(next);
-  renderSetlist();
-  updatePlayer();
-  onAudioTimeUpdate();
-  scrollToCurrentSong();
+  if (transition.previousItem) releaseItemResources(transition.previousItem);
+  transition.previousItem = null;
   persistPlaybackState(true);
 }
 
@@ -1772,13 +1929,15 @@ function fadeToPause() {
   const graph = audioGraphs.get(audioA).gain.gain;
   const now = audioContext.currentTime;
   const startingGain = Math.max(.001, Math.min(1, graph.value));
+  const plannedPauseTime = audioA.currentTime + (PAUSE_FADE_MS / 1000) * (audioA.playbackRate || 1);
   graph.cancelScheduledValues(now);
   graph.setValueAtTime(startingGain, now);
   graph.exponentialRampToValueAtTime(.001, now + PAUSE_FADE_MS / 1000);
-  fadeTimer = setTimeout(async () => {
-    fadeTimer = null;
+  fadeCue = scheduleAudioClockCue(PAUSE_FADE_MS / 1000, async () => {
+    fadeCue = null;
     if (!state.fading) return;
-    const pausedTime = audioA.currentTime;
+    const livePauseTime = Number.isFinite(audioA.currentTime) ? audioA.currentTime : plannedPauseTime;
+    const pausedTime = Math.max(0, Math.min(audioA.duration || plannedPauseTime, plannedPauseTime, livePauseTime));
     const pausedItem = state.current;
     audioA.pause();
     const currentTime = audioContext.currentTime;
@@ -1796,14 +1955,14 @@ function fadeToPause() {
     updatePlayButton();
     updateNextTrackLabel();
     persistPlaybackState(true);
-  }, PAUSE_FADE_MS + 40);
+  });
   updatePlayButton();
 }
 
 function cancelPauseFade() {
   if (!state.fading) return;
-  if (fadeTimer) clearTimeout(fadeTimer);
-  fadeTimer = null;
+  fadeCue?.cancel();
+  fadeCue = null;
   state.fading = false;
   initAudioGraph();
   const gain = audioGraphs.get(audioA).gain.gain;
@@ -1905,7 +2064,6 @@ async function updateScreenWakeLock() {
   const requestToken = ++wakeLockRequestToken;
   const shouldHold = Boolean(
     navigator.wakeLock?.request
-    && state.locked
     && !audioA.paused
     && document.visibilityState === "visible"
   );
@@ -1920,7 +2078,6 @@ async function updateScreenWakeLock() {
     const lock = await navigator.wakeLock.request("screen");
     if (
       requestToken !== wakeLockRequestToken
-      || !state.locked
       || audioA.paused
       || document.visibilityState !== "visible"
     ) {
@@ -2101,7 +2258,9 @@ async function bootstrap(allowDownload = false) {
     if (missing.length) throw new Error(`The archive is missing ${missing[0].name}.`);
     hydrateCachedSongMetadata(state.groups);
     loadShortenedDurationCache();
+    navigator.storage?.persist?.().catch(() => {});
     await prepareInitialMetadataCache();
+    await prepareInitialArtworkCache();
     renderPicker();
     renderDrawer();
     $("google-signin-button").hidden = true;
@@ -2109,7 +2268,6 @@ async function bootstrap(allowDownload = false) {
     $("download-screen").style.display = "none";
     $("app-shell").hidden = false;
     await restorePlaybackState();
-    navigator.storage?.persist?.().catch(() => {});
     refreshMetadataInBackground().catch(() => {});
   } catch (error) {
     setDownloadStatus(error.message || "Could not load the playlist archive.");
