@@ -1,12 +1,17 @@
 const GOOGLE_CLIENT_ID = "465530902895-smsu60b8qvdv83ahrbr7pi7grl5cjh8b.apps.googleusercontent.com";
-const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/1DCFco9HpAeQvhoVc-8zuPG54onLyeKEa?alt=media&acknowledgeAbuse=true";
+const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/1S2aGqe7ttVQ-SznPjTu93wQSQT5rfNdj?alt=media&acknowledgeAbuse=true";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
+const TRACK_CACHE_PREFIX = "track:";
+const MAX_CACHED_TRACKS = 4;
 const LOCK_PASSWORD = "1235";
 const LOCK_TIMEOUT_MS = 30_000;
 const SHORTENED_DURATION_CACHE = "playlist-studio-shortened-durations";
+const SONG_METADATA_CACHE = "playlist-studio-song-metadata-v2";
+const PLAYBACK_STATE_KEY = "playlist-studio-playback-state-v1";
 const PAUSE_FADE_MS = 3500;
+const PLAYBACK_CHECKPOINT_MS = 2000;
 const DEFAULT_SHORTENED_DURATIONS = { pizza: 4 * 3600 + 21 * 60, dinner: 2 * 3600 + 36 * 60, wedding: 6 * 3600 + 12 * 60 };
 const AUDIO_EXTENSIONS = new Set([".mp3", ".m4a", ".flac", ".ogg", ".opus", ".wav", ".aac", ".webm"]);
 const ALLOWED_EMOJIS = ["💞", "✨", "🍂", "🕺", "🗑️"];
@@ -56,6 +61,12 @@ let menuCloseTimer = null;
 let artSwapToken = 0;
 let artSwapCleanup = null;
 let fadeTimer = null;
+let metadataCache = {};
+let metadataCacheTimer = null;
+let lastPlaybackCheckpoint = 0;
+let lastMediaPositionUpdate = 0;
+let playRequestToken = 0;
+let archiveZipPromise = null;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (seconds) => {
@@ -71,14 +82,10 @@ const yieldToBrowser = () => new Promise((resolve) => {
   if (window.requestIdleCallback) window.requestIdleCallback(resolve, { timeout: 1000 });
   else setTimeout(resolve, 50);
 });
-
-async function waitForPlaybackIdle() {
-  while (true) {
-    while (!audioA.paused || transition.active || state.fading) await sleep(250);
-    await yieldToBrowser();
-    if (audioA.paused && !transition.active && !state.fading) return;
-  }
-}
+const yieldForMetadata = async () => {
+  await yieldToBrowser();
+  if (!audioA.paused) await sleep(350);
+};
 
 function toast(message) {
   const element = $("toast");
@@ -86,6 +93,170 @@ function toast(message) {
   element.classList.add("show");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => element.classList.remove("show"), 2600);
+}
+
+function itemKey(item) {
+  return `${item.folder}/${item.filename}`;
+}
+
+function loadSongMetadataCache() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SONG_METADATA_CACHE) || "{}");
+    metadataCache = parsed && typeof parsed === "object" ? parsed : {};
+  } catch (_) {
+    metadataCache = {};
+  }
+}
+
+function applyTimingMetadata(item, metadata) {
+  const duration = Number(metadata?.duration);
+  if (!(duration > 0)) return false;
+  const optionalNumber = (value) => value === null || value === undefined || value === ""
+    ? null
+    : Number.isFinite(Number(value)) ? Number(value) : null;
+  item.duration = duration;
+  item.transitionPoint = optionalNumber(metadata.transitionPoint);
+  if (item.transitionPoint === null) item.transitionPoint = Math.max(0, duration - 8);
+  item.startPoint = optionalNumber(metadata.startPoint);
+  item.quickIntro = Boolean(metadata.quickIntro);
+  item.longOutro = Boolean(metadata.longOutro);
+  item.longOutroSeconds = Math.max(1, Math.min(120, Number(metadata.longOutroSeconds) || 6));
+  item.bpmOutro = Boolean(metadata.bpmOutro);
+  item.manualBpm = optionalNumber(metadata.manualBpm);
+  item.metadataLoaded = true;
+  return true;
+}
+
+function hydrateCachedSongMetadata(groups) {
+  loadSongMetadataCache();
+  for (const item of groups.flatMap((group) => group.songs)) {
+    applyTimingMetadata(item, metadataCache[itemKey(item)]);
+  }
+}
+
+function flushSongMetadataCache() {
+  metadataCacheTimer = null;
+  try { localStorage.setItem(SONG_METADATA_CACHE, JSON.stringify(metadataCache)); } catch (_) {}
+}
+
+function cacheItemMetadata(item) {
+  if (!item.duration) return;
+  metadataCache[itemKey(item)] = {
+    duration: item.duration,
+    transitionPoint: item.transitionPoint,
+    startPoint: item.startPoint,
+    quickIntro: item.quickIntro,
+    longOutro: item.longOutro,
+    longOutroSeconds: item.longOutroSeconds,
+    bpmOutro: item.bpmOutro,
+    manualBpm: item.manualBpm,
+  };
+  if (metadataCacheTimer) return;
+  metadataCacheTimer = setTimeout(flushSongMetadataCache, 500);
+}
+
+async function hydrateServerSongMetadata(groups) {
+  if (navigator.onLine === false) return 0;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3500);
+  const folders = [...new Set(groups.flatMap((group) => group.folders))];
+  const byKey = new Map(groups.flatMap((group) => group.songs).map((item) => [itemKey(item), item]));
+  let hydrated = 0;
+  try {
+    const responses = await Promise.allSettled(folders.map(async (folder) => {
+      const response = await fetch(`/api/playlists/${encodeURIComponent(folder)}`, {
+        signal: controller.signal,
+        credentials: "same-origin",
+      });
+      if (!response.ok) throw new Error(`Metadata HTTP ${response.status}`);
+      return response.json();
+    }));
+    for (const result of responses) {
+      if (result.status !== "fulfilled") continue;
+      for (const metadata of result.value?.items || []) {
+        if (metadata.type !== "song") continue;
+        const item = byKey.get(`${metadata.playlist}/${metadata.id}`);
+        if (!item || !applyTimingMetadata(item, {
+          duration: metadata.duration,
+          transitionPoint: metadata.transition_point,
+          startPoint: metadata.start_point,
+          quickIntro: metadata.quick_intro,
+          longOutro: metadata.long_outro,
+          longOutroSeconds: metadata.long_outro_seconds,
+          bpmOutro: metadata.bpm_outro,
+          manualBpm: metadata.manual_bpm,
+        })) continue;
+        cacheItemMetadata(item);
+        hydrated++;
+      }
+    }
+  } catch (_) {
+    // The installed player also works offline; embedded metadata remains the fallback.
+  } finally {
+    clearTimeout(timeout);
+  }
+  return hydrated;
+}
+
+function persistedItem(item) {
+  return item ? { folder: item.folder, filename: item.filename } : null;
+}
+
+function findPersistedItem(group, reference) {
+  if (!group || !reference) return null;
+  return group.songs.find((item) => item.folder === reference.folder && item.filename === reference.filename) || null;
+}
+
+function readPlaybackState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PLAYBACK_STATE_KEY) || "null");
+    return saved && saved.version === 1 ? saved : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function persistPlaybackState(force = false) {
+  if (!state.selectedGroup || !state.current) return;
+  const now = Date.now();
+  if (!force && now - lastPlaybackCheckpoint < PLAYBACK_CHECKPOINT_MS) return;
+  lastPlaybackCheckpoint = now;
+  const checkpoint = {
+    version: 1,
+    savedAt: now,
+    groupId: state.selectedGroup.id,
+    current: persistedItem(state.current),
+    currentTime: Number.isFinite(audioA.currentTime) ? audioA.currentTime : 0,
+    started: state.started,
+    wasPlaying: !audioA.paused,
+    queuedNext: persistedItem(state.queuedNext),
+    fadePaused: state.fadePaused ? {
+      item: persistedItem(state.fadePaused.item),
+      time: state.fadePaused.time,
+    } : null,
+  };
+  try { localStorage.setItem(PLAYBACK_STATE_KEY, JSON.stringify(checkpoint)); } catch (_) {}
+}
+
+async function restorePlaybackState() {
+  const saved = readPlaybackState();
+  const group = state.groups.find((candidate) => candidate.id === saved?.groupId);
+  const item = findPersistedItem(group, saved?.current);
+  if (!group || !item) return false;
+  await selectGroup(group.id, { prepareInitial: false });
+  await playSong(item, false, false);
+  const duration = audioA.duration || item.duration || saved.currentTime;
+  audioA.currentTime = Math.max(0, Math.min(duration || 0, Number(saved.currentTime) || 0));
+  state.started = Boolean(saved.started);
+  state.queuedNext = findPersistedItem(group, saved.queuedNext);
+  const pausedItem = findPersistedItem(group, saved.fadePaused?.item);
+  state.fadePaused = pausedItem ? { item: pausedItem, time: Math.max(0, Number(saved.fadePaused.time) || 0) } : null;
+  onAudioTimeUpdate();
+  renderSetlist();
+  updatePlayer();
+  preloadTransitionMetadata(item);
+  persistPlaybackState(true);
+  return true;
 }
 
 function openCacheDb() {
@@ -106,11 +277,11 @@ async function readCachedZip() {
   });
 }
 
-async function writeCachedZip(blob) {
+async function writeCachedZip(blob, paths = [], savedAt = Date.now()) {
   const db = await openCacheDb();
   return new Promise((resolve, reject) => {
     const request = db.transaction(CACHE_STORE, "readwrite").objectStore(CACHE_STORE)
-      .put({ blob, savedAt: Date.now() }, "playlist-zip");
+      .put({ blob, paths, savedAt }, "playlist-zip");
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
@@ -119,9 +290,40 @@ async function writeCachedZip(blob) {
 async function removeCachedZip() {
   const db = await openCacheDb();
   return new Promise((resolve, reject) => {
-    const request = db.transaction(CACHE_STORE, "readwrite").objectStore(CACHE_STORE).delete("playlist-zip");
+    const request = db.transaction(CACHE_STORE, "readwrite").objectStore(CACHE_STORE).clear();
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
+  });
+}
+
+function trackCacheKey(item) {
+  return `${TRACK_CACHE_PREFIX}${itemKey(item)}`;
+}
+
+async function readCachedTrack(item) {
+  const db = await openCacheDb();
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(CACHE_STORE, "readonly").objectStore(CACHE_STORE).get(trackCacheKey(item));
+    request.onsuccess = () => resolve(request.result?.blob || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function writeCachedTrack(item, blob) {
+  const db = await openCacheDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(CACHE_STORE, "readwrite");
+    const store = transaction.objectStore(CACHE_STORE);
+    store.put({ kind: "track", key: trackCacheKey(item), blob, savedAt: Date.now() }, trackCacheKey(item));
+    const range = IDBKeyRange.bound(TRACK_CACHE_PREFIX, `${TRACK_CACHE_PREFIX}\uffff`);
+    const request = store.getAll(range);
+    request.onsuccess = () => {
+      const tracks = request.result.filter((record) => record?.kind === "track")
+        .sort((a, b) => b.savedAt - a.savedAt);
+      for (const record of tracks.slice(MAX_CACHED_TRACKS)) store.delete(record.key);
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
   });
 }
 
@@ -218,11 +420,20 @@ async function downloadZip() {
 async function getZipBlob(allowDownload = false) {
   const cached = await readCachedZip();
   if (cached?.blob) {
-    try {
-      const zip = await JSZip.loadAsync(cached.blob);
+    if (Array.isArray(cached.paths) && cached.paths.length) {
       $("cache-note").textContent = `Cached ${new Date(cached.savedAt).toLocaleDateString()}`;
       setDownloadStatus("Opening the cached archive…", 1);
-      return { blob: cached.blob, zip };
+      archiveZipPromise = null;
+      return { blob: cached.blob, zip: null, paths: cached.paths };
+    }
+    try {
+      const zip = await JSZip.loadAsync(cached.blob);
+      const paths = Object.keys(zip.files).filter((path) => !zip.files[path].dir);
+      archiveZipPromise = Promise.resolve(zip);
+      writeCachedZip(cached.blob, paths, cached.savedAt).catch(() => {});
+      $("cache-note").textContent = `Cached ${new Date(cached.savedAt).toLocaleDateString()}`;
+      setDownloadStatus("Opening the cached archive…", 1);
+      return { blob: cached.blob, zip, paths };
     } catch (_) {
       await removeCachedZip();
     }
@@ -234,9 +445,16 @@ async function getZipBlob(allowDownload = false) {
   }
   const downloaded = await downloadZip();
   const zip = await JSZip.loadAsync(downloaded);
-  await writeCachedZip(downloaded);
+  const paths = Object.keys(zip.files).filter((path) => !zip.files[path].dir);
+  archiveZipPromise = Promise.resolve(zip);
+  await writeCachedZip(downloaded, paths);
   $("cache-note").textContent = "Cached on this device";
-  return { blob: downloaded, zip };
+  return { blob: downloaded, zip, paths };
+}
+
+function loadArchiveZip(blob) {
+  if (!archiveZipPromise) archiveZipPromise = JSZip.loadAsync(blob);
+  return archiveZipPromise;
 }
 
 function fileSort(a, b) {
@@ -281,17 +499,25 @@ function parseItem(folder, entry) {
   return {
     type: "song", name: title || "Unknown Title", artist: artist || "Unknown Artist", emoji,
     position: parsePosition(filename), filename, folder, entry, blob: null, url: null,
-    artUrl: null, artBlob: null, duration: 0, transitionPoint: null, startPoint: null, waveform: null, metadataLoaded: false,
-    quickIntro: false, longOutro: false, longOutroSeconds: 6, bpmOutro: false, manualBpm: null, detectedBpm: null,
+    artUrl: null, artBlob: null, artworkLoaded: false, duration: 0, transitionPoint: null, startPoint: null, metadataLoaded: false,
+    quickIntro: false, longOutro: false, longOutroSeconds: 6, bpmOutro: false, manualBpm: null,
   };
 }
 
-async function extractPlaylists(blob, loadedZip = null) {
-  const zip = loadedZip || await JSZip.loadAsync(blob);
+async function extractPlaylists(blob, loadedZip = null, cachedPaths = null) {
+  const paths = cachedPaths || Object.keys(loadedZip?.files || {});
   const physicalFolders = new Set(GROUPS.flatMap((group) => group.folders));
   const entries = new Map();
-  for (const path of Object.keys(zip.files)) {
-    const entry = zip.files[path];
+  for (const path of paths) {
+    const entry = loadedZip?.files[path] || {
+      name: path,
+      async: async (type) => {
+        const zip = await loadArchiveZip(blob);
+        const lazyEntry = zip.file(path);
+        if (!lazyEntry) throw new Error(`The archive entry ${path} is missing.`);
+        return lazyEntry.async(type);
+      },
+    };
     if (entry.dir) continue;
     const parts = path.replaceAll("\\", "/").split("/").filter(Boolean);
     const playlistIndex = parts.findIndex((part) => part.toLowerCase() === "playlists");
@@ -320,14 +546,23 @@ async function extractPlaylists(blob, loadedZip = null) {
   return groups;
 }
 
-async function ensureBlob(item) {
+async function ensureBlob(item, cacheTrack = false) {
   if (!item.blob) {
     if (!item.blobPromise) {
-      item.blobPromise = item.entry.async("blob")
-        .then((blob) => { item.blob = blob; return blob; })
+      item.blobPromise = (async () => {
+        let blob = cacheTrack ? await readCachedTrack(item).catch(() => null) : null;
+        if (blob) item.blobCacheSaved = true;
+        else blob = await item.entry.async("blob");
+        item.blob = blob;
+        return blob;
+      })()
         .finally(() => { item.blobPromise = null; });
     }
     await item.blobPromise;
+  }
+  if (cacheTrack && item.blob && !item.blobCacheSaved) {
+    item.blobCacheSaved = true;
+    writeCachedTrack(item, item.blob).catch(() => { item.blobCacheSaved = false; });
   }
   return item.blob;
 }
@@ -386,9 +621,9 @@ function loadTags(item) {
 }
 
 async function loadItemMetadata(item) {
+  if (item.metadataLoaded) return item;
   await ensureBlob(item);
   ensureUrl(item);
-  if (item.metadataLoaded) return item;
   if (!item.metadataPromise) {
     item.metadataPromise = loadItemMetadataInternal(item)
       .finally(() => { item.metadataPromise = null; });
@@ -406,11 +641,6 @@ async function loadItemMetadataInternal(item) {
     item.longOutroSeconds = Math.max(1, Math.min(120, numberFromTag(tags, "PS_LONG_OUTRO_SECONDS") || 6));
     item.bpmOutro = booleanFromTag(tags, "PS_BPM_OUTRO");
     item.manualBpm = numberFromTag(tags, "PS_BPM");
-    const pictureTag = tags.picture || tags.APIC || tags.covr;
-    if (pictureTag?.data?.length) {
-      const picture = new Blob([new Uint8Array(pictureTag.data)], { type: pictureTag.format || pictureTag.mime || "image/jpeg" });
-      item.artBlob = picture;
-    }
   }
   if (!item.duration) {
     const probe = new Audio();
@@ -423,41 +653,28 @@ async function loadItemMetadataInternal(item) {
       setTimeout(() => finish(probe.duration || 0), 5000);
     });
   }
+  if (item.duration && item.transitionPoint === null) item.transitionPoint = Math.max(0, item.duration - 8);
   item.metadataLoaded = true;
+  cacheItemMetadata(item);
   return item;
 }
 
-function detectBpm(decoded) {
-  const sampleRate = decoded.sampleRate;
-  const windowSeconds = .023;
-  const windowSize = Math.max(1, Math.floor(windowSeconds * sampleRate));
-  const count = Math.min(Math.floor(decoded.length / windowSize), Math.floor(60 / windowSeconds));
-  if (count < 2) return null;
-  const energy = new Float32Array(count);
-  for (let windowIndex = 0; windowIndex < count; windowIndex++) {
-    let sum = 0;
-    const start = windowIndex * windowSize;
-    for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
-      const data = decoded.getChannelData(channel);
-      for (let sample = start; sample < start + windowSize; sample++) sum += data[sample] * data[sample];
-    }
-    energy[windowIndex] = Math.sqrt(sum / (windowSize * decoded.numberOfChannels));
+async function loadItemArtwork(item) {
+  if (item.artworkLoaded) return item;
+  if (!item.artworkPromise) {
+    item.artworkPromise = (async () => {
+      await ensureBlob(item);
+      const tags = await loadTags(item);
+      const pictureTag = tags?.picture || tags?.APIC || tags?.covr;
+      if (pictureTag?.data?.length) {
+        item.artBlob = new Blob([new Uint8Array(pictureTag.data)], { type: pictureTag.format || pictureTag.mime || "image/jpeg" });
+      }
+      item.artworkLoaded = true;
+      ensureArtUrl(item);
+      return item;
+    })().finally(() => { item.artworkPromise = null; });
   }
-  const onset = new Float32Array(count);
-  for (let index = 1; index < count; index++) onset[index] = Math.max(0, energy[index] - energy[index - 1]);
-  const minLag = Math.max(1, Math.floor((60 / 180) / windowSeconds));
-  const maxLag = Math.min(Math.ceil((60 / 60) / windowSeconds), count - 1);
-  let bestLag = minLag;
-  let bestCorrelation = -Infinity;
-  for (let lag = minLag; lag <= maxLag; lag++) {
-    let correlation = 0;
-    for (let index = 0; index + lag < count; index++) correlation += onset[index] * onset[index + lag];
-    if (correlation > bestCorrelation) { bestCorrelation = correlation; bestLag = lag; }
-  }
-  let bpm = 60 / (bestLag * windowSeconds);
-  while (bpm > 150) bpm /= 2;
-  while (bpm < 75) bpm *= 2;
-  return Math.round(bpm * 10) / 10;
+  return item.artworkPromise;
 }
 
 function ensureArtUrl(item) {
@@ -472,70 +689,8 @@ function releaseItemResources(item) {
   if (!item) return;
   if (item.url) { URL.revokeObjectURL(item.url); state.urls.delete(item.url); item.url = null; }
   item.blob = null;
+  item.blobCacheSaved = false;
   item.tagsPromise = null;
-  item.metadataLoaded = false;
-}
-
-async function analyzeWaveform(item) {
-  if (item.waveform || !item.duration) return;
-  if (!item.waveformPromise) {
-    item.waveformPromise = analyzeWaveformInternal(item)
-      .finally(() => { item.waveformPromise = null; });
-  }
-  return item.waveformPromise;
-}
-
-async function analyzeWaveformInternal(item) {
-  if (item.transitionPoint !== null && !item.bpmOutro) {
-    item.waveform = { data: new Float32Array(0), winSec: .1 };
-    return;
-  }
-  try {
-    const context = new (window.AudioContext || window.webkitAudioContext)();
-    const decoded = await context.decodeAudioData(await item.blob.arrayBuffer());
-    const sampleRate = decoded.sampleRate;
-    const windowSize = Math.max(1, Math.floor(sampleRate * .1));
-    const count = Math.floor(decoded.length / windowSize);
-    const mono = new Float32Array(count);
-    for (let windowIndex = 0; windowIndex < count; windowIndex++) {
-      let sum = 0;
-      const start = windowIndex * windowSize;
-      for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
-        const data = decoded.getChannelData(channel);
-        for (let sample = start; sample < start + windowSize; sample++) sum += data[sample] * data[sample];
-      }
-      mono[windowIndex] = Math.sqrt(sum / (windowSize * decoded.numberOfChannels));
-    }
-    const sorted = Array.from(mono).sort((a, b) => a - b);
-    const normal = sorted[Math.floor(sorted.length * .7)] || .01;
-    const normalized = new Float32Array(count);
-    const p95 = sorted[Math.floor(sorted.length * .95)] || .001;
-    for (let index = 0; index < count; index++) normalized[index] = Math.min(1, mono[index] / p95);
-    item.waveform = { data: normalized, winSec: .1 };
-    item.detectedBpm = detectBpm(decoded);
-
-    if (item.transitionPoint === null) {
-      const start = Math.floor(count * .6);
-      const end = Math.min(count, Math.floor(count * .88));
-      let bestScore = 0;
-      let bestIndex = Math.max(start, Math.floor(count - 8 / .1));
-      for (let index = start + 15; index < end - 10; index++) {
-        if (mono[index] > normal * .3) continue;
-        let before = 0;
-        for (let scan = index - 15; scan < index; scan++) before += mono[scan];
-        before /= 15;
-        if (before < normal * .4) continue;
-        const score = (before - mono[index]) * before;
-        if (score > bestScore) { bestScore = score; bestIndex = index; }
-      }
-      item.transitionPoint = Math.max(item.duration * .6, Math.min(item.duration * .88, bestIndex * .1));
-    }
-    await context.close();
-    if (state.current === item) updateMarkers();
-  } catch (_) {
-    item.waveform = { data: new Float32Array(0), winSec: .1 };
-    if (item.transitionPoint === null) item.transitionPoint = Math.max(0, item.duration - 8);
-  }
 }
 
 function setImage(image, url) {
@@ -666,36 +821,43 @@ function formatClockTime(seconds) {
   return `${hour}:${minute}${meridiem}`;
 }
 
-async function preloadMetadata(group) {
-  for (const item of group.songs) {
-    await waitForPlaybackIdle();
-    try {
-      await loadItemMetadata(item);
-      await analyzeWaveform(item);
-    } catch (_) {}
-    if (state.selectedGroup === group) updateSetlistRow(item);
-    if (item !== state.current && item !== state.queuedNext) releaseItemResources(item);
+async function preloadMetadataInternal(group) {
+  if (group.songs.every((item) => item.metadataLoaded && item.duration)) {
+    saveShortenedDuration(group.id, group.songs.reduce((total, item) => total + getShortenedDuration(item), 0));
+    if (state.selectedGroup === group) {
+      for (const item of group.songs) updateSetlistRow(item);
+    }
     renderPicker();
     renderDrawer();
-    await yieldToBrowser();
+    return;
   }
-}
-
-async function preloadGroupDurations(group) {
   let total = 0;
+  let loaded = 0;
   for (const item of group.songs) {
-    await waitForPlaybackIdle();
     try {
       await loadItemMetadata(item);
-      await analyzeWaveform(item);
       total += getShortenedDuration(item);
+      if (item.duration) loaded++;
     } catch (_) {}
-    if (item !== state.current && item !== state.queuedNext) releaseItemResources(item);
-    await yieldToBrowser();
+    if (state.selectedGroup === group) updateSetlistRow(item);
+    if (item !== state.current && item !== state.queuedNext && item !== getNextSong()) releaseItemResources(item);
+    await yieldForMetadata();
   }
-  saveShortenedDuration(group.id, total);
+  if (loaded === group.songs.length) saveShortenedDuration(group.id, total);
   renderPicker();
   renderDrawer();
+}
+
+function preloadMetadata(group) {
+  if (!group.metadataPreloadPromise) {
+    group.metadataPreloadPromise = preloadMetadataInternal(group)
+      .finally(() => { group.metadataPreloadPromise = null; });
+  }
+  return group.metadataPreloadPromise;
+}
+
+function preloadGroupDurations(group) {
+  return preloadMetadata(group);
 }
 
 async function preloadAllGroupDurations() {
@@ -874,40 +1036,27 @@ function updateScrollPip() {
   currentPip.style.opacity = currentRow ? "1" : "0";
 }
 
-async function preloadArtwork(group) {
-  for (const item of group.songs) {
-    try {
-      await ensureBlob(item);
-      const tags = await loadTags(item);
-      const pictureTag = tags?.picture || tags?.APIC || tags?.covr;
-      if (pictureTag?.data?.length) item.artBlob = new Blob([new Uint8Array(pictureTag.data)], { type: pictureTag.format || pictureTag.mime || "image/jpeg" });
-      ensureArtUrl(item);
-      if (state.selectedGroup === group) {
-        updateSetlistRow(item);
-        const artWrap = $("player-art-wrap");
-        if (state.current === item && !artWrap?.classList.contains("is-swapping")) setImage($("player-art"), ensureArtUrl(item));
-      }
-    } catch (_) {}
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-}
-
 async function selectInitialSong(item) {
   if (!item) return;
   try {
-    await loadItemMetadata(item);
-    await analyzeWaveform(item);
+    await ensureBlob(item, true);
+    await Promise.all([loadItemMetadata(item), loadItemArtwork(item)]);
     if (state.current === item) updatePlayer();
     preloadTransitionMetadata(item);
   } catch (_) {}
 }
 
 async function preloadTransitionMetadata(item) {
-  const next = state.songs[state.songs.indexOf(item) + 1];
+  const next = item === state.current ? getNextSong() : state.songs[state.songs.indexOf(item) + 1];
   if (!next) return;
   try {
+    await ensureBlob(next, true);
     await loadItemMetadata(next);
-    await analyzeWaveform(next);
+    ensureUrl(next);
+    loadItemArtwork(next).then(() => {
+      if (state.selectedGroup?.songs.includes(next)) updateSetlistRow(next);
+      if (getNextSong() === next) updateUpNext();
+    }).catch(() => {});
   } catch (_) {}
 }
 
@@ -940,6 +1089,9 @@ function updateMediaSession() {
 
 function updateMediaPosition() {
   if (!navigator.mediaSession?.setPositionState) return;
+  const now = performance.now();
+  if (now - lastMediaPositionUpdate < 1000) return;
+  lastMediaPositionUpdate = now;
   const duration = audioA.duration || state.current?.duration || 0;
   if (duration > 0 && Number.isFinite(duration)) {
     navigator.mediaSession.setPositionState({
@@ -958,7 +1110,7 @@ function updatePlayButton() {
   button.classList.toggle("is-playing", Boolean(playing));
   wrapper.classList.toggle("is-fading", state.fading);
   if (!state.fading) wrapper.style.removeProperty("--fade-progress");
-  button.setAttribute("aria-label", playing ? "Fade to pause" : "Play next track");
+  button.setAttribute("aria-label", state.fading ? "Cancel pause fade" : playing ? "Fade to pause" : "Play current track");
 }
 
 function updateNextTrackLabel() {
@@ -1054,11 +1206,15 @@ async function searchSongs(query) {
   `).join("");
 }
 
-async function selectGroup(id) {
+async function selectGroup(id, { prepareInitial = true } = {}) {
   const group = state.groups.find((candidate) => candidate.id === id);
   if (!group) return;
+  playRequestToken++;
   const previous = state.current;
   abortTransition();
+  state.fading = false;
+  state.fadePaused = null;
+  state.resumeFadeIn = false;
   audioA.pause(); audioB.pause();
   audioA.removeAttribute("src");
   audioB.removeAttribute("src");
@@ -1081,13 +1237,12 @@ async function selectGroup(id) {
   renderSetlist();
   updatePlayer();
   onAudioTimeUpdate();
-  selectInitialSong(state.current);
-  preloadArtwork(group);
-  preloadMetadata(group);
+  if (prepareInitial) selectInitialSong(state.current);
 }
 
 async function playSong(item, shouldPlay, respectInPoint = true) {
   if (!item) return;
+  const requestToken = ++playRequestToken;
   const previous = state.current;
   const previousArtUrl = previous && previous !== item ? ensureArtUrl(previous) || getDisplayedArtUrl() : "";
   clearQueuedNext();
@@ -1098,8 +1253,13 @@ async function playSong(item, shouldPlay, respectInPoint = true) {
   state.started = true;
   state.current = item;
   state.currentIndex = state.songs.indexOf(item);
+  await ensureBlob(item, true);
   await loadItemMetadata(item);
-  await analyzeWaveform(item);
+  if (requestToken !== playRequestToken || state.current !== item) return;
+  loadItemArtwork(item).then(() => {
+    if (state.current === item) updatePlayer();
+    if (state.selectedGroup?.songs.includes(item)) updateSetlistRow(item);
+  }).catch(() => {});
   audioA.pause(); audioB.pause();
   audioA.src = ensureUrl(item);
   audioA.load();
@@ -1114,6 +1274,7 @@ async function playSong(item, shouldPlay, respectInPoint = true) {
       audioA.addEventListener("error", resolve, { once: true });
     }
   });
+  if (requestToken !== playRequestToken || state.current !== item) return;
   if (state.current === item && respectInPoint) await seekToInPoint(audioA, item);
   else if (state.current === item) audioA.currentTime = 0;
   onAudioTimeUpdate();
@@ -1124,6 +1285,7 @@ async function playSong(item, shouldPlay, respectInPoint = true) {
   renderSetlist();
   updatePlayer();
   preloadTransitionMetadata(item);
+  persistPlaybackState(true);
 }
 
 function getNextSong() {
@@ -1190,6 +1352,7 @@ async function startTransition() {
   $("player-view").classList.add("is-transitioning");
   transition.duration = computeTransitionDuration(state.current);
   initAudioGraph();
+  await ensureBlob(next, true);
   await loadItemMetadata(next);
   if (!transition.active) return;
   audioB.src = ensureUrl(next);
@@ -1214,8 +1377,8 @@ async function startTransition() {
   const hasLongOutro = currentItem.longOutro;
   const hasQuickIntro = next.quickIntro;
   const extra = hasLongOutro ? currentItem.longOutroSeconds : 0;
-  const bpmA = currentItem.manualBpm || currentItem.detectedBpm;
-  const bpmB = next.manualBpm || next.detectedBpm;
+  const bpmA = currentItem.manualBpm;
+  const bpmB = next.manualBpm;
   const bpmRateExtra = currentItem.bpmOutro && bpmA && bpmB
     ? Math.max(.75, Math.min(1.25, bpmB / bpmA)) - 1
     : .09;
@@ -1266,7 +1429,7 @@ async function startTransition() {
       return;
     }
     audioA.playbackRate = 1 + (elapsed / rateDuration) * bpmRateExtra;
-  }, 50);
+  }, 100);
 
   const completionMs = (hasQuickIntro ? cut : transition.duration) * 1000 + extra * 1000;
   transition.timer = setTimeout(() => completeTransition(next), completionMs);
@@ -1305,11 +1468,12 @@ function completeTransition(next) {
   state.currentIndex = state.songs.indexOf(next);
   if (state.queuedNext === next) clearQueuedNext();
   animatePlayerArt(next, previousArtUrl, () => releaseItemResources(previous));
-  loadItemMetadata(next).then(() => analyzeWaveform(next)).catch(() => {});
+  preloadTransitionMetadata(next);
   renderSetlist();
   updatePlayer();
   onAudioTimeUpdate();
   scrollToCurrentSong();
+  persistPlaybackState(true);
 }
 
 function fadeToPause() {
@@ -1335,6 +1499,7 @@ function fadeToPause() {
     state.fading = false;
     const checkpoint = { item: pausedItem, time: pausedTime };
     state.fadePaused = checkpoint;
+    persistPlaybackState(true);
     const next = getNextSong();
     if (next) {
       await playSong(next, false, false);
@@ -1342,8 +1507,30 @@ function fadeToPause() {
     }
     updatePlayButton();
     updateNextTrackLabel();
+    persistPlaybackState(true);
   }, PAUSE_FADE_MS + 40);
   updatePlayButton();
+}
+
+function cancelPauseFade() {
+  if (!state.fading) return;
+  if (fadeTimer) clearTimeout(fadeTimer);
+  fadeTimer = null;
+  state.fading = false;
+  initAudioGraph();
+  const gain = audioGraphs.get(audioA).gain.gain;
+  const now = audioContext.currentTime;
+  if (typeof gain.cancelAndHoldAtTime === "function") gain.cancelAndHoldAtTime(now);
+  else {
+    const heldGain = Math.max(.001, Math.min(1, gain.value));
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(heldGain, now);
+  }
+  gain.linearRampToValueAtTime(1, now + .18);
+  audioA.play().catch(() => toast("Tap play to keep playing."));
+  updatePlayButton();
+  updateNextTrackLabel();
+  persistPlaybackState(true);
 }
 
 async function goBackToPaused() {
@@ -1384,8 +1571,19 @@ function playNextTrack() {
   else toast("You are at the end of this set.");
 }
 
-function onAudioPlay() { updatePlayButton(); updateNextTrackLabel(); updateMediaSession(); }
-function onAudioPause() { updatePlayButton(); updateNextTrackLabel(); updateMediaSession(); }
+function onAudioPlay() {
+  audioContext?.resume().catch(() => {});
+  updatePlayButton();
+  updateNextTrackLabel();
+  updateMediaSession();
+  persistPlaybackState(true);
+}
+function onAudioPause() {
+  updatePlayButton();
+  updateNextTrackLabel();
+  updateMediaSession();
+  persistPlaybackState(true);
+}
 function onAudioEnded() {
   if (transition.active) return;
   const next = getNextSong();
@@ -1398,7 +1596,7 @@ function onAudioTimeUpdate() {
   $("time-current").textContent = fmt(audioA.currentTime);
   $("time-duration").textContent = fmt(duration);
   updateMediaPosition();
-  updateMarkers();
+  persistPlaybackState();
   if (!transition.active && audioA.paused === false && state.current && duration && state.current.transitionPoint !== null && audioA.currentTime >= state.current.transitionPoint) startTransition();
 }
 
@@ -1416,7 +1614,10 @@ function attachAudioListeners() {
 }
 
 function handleTransport() {
-  if (state.fading) return;
+  if (state.fading) {
+    cancelPauseFade();
+    return;
+  }
   if (state.current && !audioA.paused) fadeToPause();
   else if (state.current && !state.started) playSong(state.current, true);
   else if (state.current) playCurrentWithFadeIn();
@@ -1482,23 +1683,44 @@ function unlock() {
 async function clearCache() {
   $("confirm-modal").hidden = true;
   closeDrawer();
+  persistPlaybackState(true);
   abortTransition();
   audioA.pause(); audioB.pause();
   for (const url of state.urls) URL.revokeObjectURL(url);
   state.urls.clear();
   await removeCachedZip();
+  archiveZipPromise = null;
+  if (metadataCacheTimer) clearTimeout(metadataCacheTimer);
+  metadataCacheTimer = null;
+  metadataCache = {};
+  try {
+    localStorage.removeItem(SONG_METADATA_CACHE);
+    localStorage.removeItem(SHORTENED_DURATION_CACHE);
+  } catch (_) {}
   $("app-shell").hidden = true;
   $("download-screen").style.display = "grid";
   await bootstrap(true);
+}
+
+async function refreshMetadataInBackground() {
+  const needsMetadata = state.groups.some((group) => group.songs.some((item) => !item.metadataLoaded || !item.duration));
+  if (needsMetadata) {
+    await hydrateServerSongMetadata(state.groups);
+    renderPicker();
+    renderDrawer();
+    if (state.selectedGroup) renderSetlist();
+  }
+  await preloadAllGroupDurations();
 }
 
 async function bootstrap(allowDownload = false) {
   try {
     const archive = await getZipBlob(allowDownload);
     setDownloadStatus("Preparing the sets…", .98);
-    state.groups = await extractPlaylists(archive.blob, archive.zip);
+    state.groups = await extractPlaylists(archive.blob, archive.zip, archive.paths);
     const missing = state.groups.filter((group) => !group.songs.length);
     if (missing.length) throw new Error(`The archive is missing ${missing[0].name}.`);
+    hydrateCachedSongMetadata(state.groups);
     loadShortenedDurationCache();
     renderPicker();
     renderDrawer();
@@ -1506,7 +1728,9 @@ async function bootstrap(allowDownload = false) {
     $("download-retry").hidden = true;
     $("download-screen").style.display = "none";
     $("app-shell").hidden = false;
-    preloadAllGroupDurations();
+    await restorePlaybackState();
+    navigator.storage?.persist?.().catch(() => {});
+    refreshMetadataInBackground().catch(() => {});
   } catch (error) {
     setDownloadStatus(error.message || "Could not load the playlist archive.");
     $("download-progress").style.width = "0";
@@ -1602,13 +1826,24 @@ if (navigator.mediaSession) {
   const setMediaAction = (action, handler) => {
     try { navigator.mediaSession.setActionHandler(action, handler); } catch (_) {}
   };
-  setMediaAction("play", playCurrentWithFadeIn);
+  setMediaAction("play", () => state.fading ? cancelPauseFade() : playCurrentWithFadeIn());
   setMediaAction("pause", () => {
-    if (!audioA.paused) fadeToPause();
+    if (state.fading) cancelPauseFade();
+    else if (!audioA.paused) fadeToPause();
   });
   setMediaAction("seekbackward", () => { audioA.currentTime = Math.max(0, audioA.currentTime - 10); });
   setMediaAction("seekforward", () => { audioA.currentTime = Math.min(audioA.duration || Infinity, audioA.currentTime + 10); });
   setMediaAction("nexttrack", playNextTrack);
 }
+const checkpointPlayback = () => persistPlaybackState(true);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") checkpointPlayback();
+  else if (!audioA.paused) audioContext?.resume().catch(() => {});
+});
+document.addEventListener("freeze", checkpointPlayback);
+document.addEventListener("resume", () => {
+  if (!audioA.paused) audioContext?.resume().catch(() => {});
+});
+window.addEventListener("pagehide", checkpointPlayback);
 navigator.serviceWorker?.register("service-worker.js", { scope: "./" }).catch(() => {});
 bootstrap();
