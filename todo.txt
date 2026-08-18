@@ -1,20 +1,12 @@
-App fixes:
-- Fix issue with pausing or clicking away or changing "go here next" when transitioning between songs
-- cancel fade out if hitting pause again
-- Fix app lag, fix session losing position
-
 Options to pull in from Pizza Party:
  One Way Or Another
+ September
 
 Optional songs to add into Wedding Reception or Pizza Party:
  Shout - The Isley Brothers
  Gangsta's Paradise - Coolio
-
-Extras for Pizza Party
  American Pie - Don McLean
  Hey Jude - The Beatles
  Take Me Home, Country Roads - John Denve
  APT. - ROSÉ & Bruno Mars
  Pink Pony Club - Chappell Roan
-
- 1DCFco9HpAeQvhoVc-8zuPG54onLyeKEa
