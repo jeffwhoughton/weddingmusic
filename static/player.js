@@ -11,6 +11,7 @@ const LOCK_PASSWORD = "1235";
 const LOCK_TIMEOUT_MS = 30_000;
 const SHORTENED_DURATION_CACHE = "playlist-studio-shortened-durations";
 const SONG_METADATA_CACHE = "playlist-studio-song-metadata-v2";
+const ARTWORK_GROUP_CACHE = "playlist-studio-artwork-groups-v1";
 const PLAYBACK_STATE_KEY = "playlist-studio-playback-state-v1";
 const PAUSE_FADE_MS = 3500;
 const PLAYBACK_CHECKPOINT_MS = 2000;
@@ -75,6 +76,8 @@ let artworkQueued = new Set();
 let artworkQueueRunning = false;
 let artworkGroupToken = 0;
 let artworkApiAvailable = null;
+let screenWakeLock = null;
+let wakeLockRequestToken = 0;
 
 const $ = (id) => document.getElementById(id);
 const fmt = (seconds) => {
@@ -163,10 +166,10 @@ function cacheItemMetadata(item) {
   metadataCacheTimer = setTimeout(flushSongMetadataCache, 500);
 }
 
-async function hydrateServerSongMetadata(groups) {
+async function hydrateServerSongMetadata(groups, timeoutMs = 3500) {
   if (navigator.onLine === false) return 0;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3500);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const folders = [...new Set(groups.flatMap((group) => group.folders))];
   const byKey = new Map(groups.flatMap((group) => group.songs).map((item) => [itemKey(item), item]));
   let hydrated = 0;
@@ -356,6 +359,47 @@ async function writeCachedArtwork(item, blob) {
     request.onsuccess = () => resolve();
     request.onerror = () => reject(request.error);
   });
+}
+
+function readPreparedArtworkGroups() {
+  try {
+    const cached = JSON.parse(localStorage.getItem(ARTWORK_GROUP_CACHE) || "{}");
+    return cached && typeof cached === "object" ? cached : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function savePreparedArtworkGroup(group, imageCount) {
+  const cached = readPreparedArtworkGroups();
+  cached[group.id] = imageCount;
+  try { localStorage.setItem(ARTWORK_GROUP_CACHE, JSON.stringify(cached)); } catch (_) {}
+}
+
+async function hydrateGroupArtworkCache(group) {
+  const wanted = new Map(group.songs.map((item) => [artworkCacheKey(item), item]));
+  const db = await openCacheDb();
+  const hydrated = await new Promise((resolve, reject) => {
+    const transaction = db.transaction(CACHE_STORE, "readonly");
+    const store = transaction.objectStore(CACHE_STORE);
+    const range = IDBKeyRange.bound(ARTWORK_CACHE_PREFIX, `${ARTWORK_CACHE_PREFIX}\uffff`);
+    const request = store.openCursor(range);
+    let count = 0;
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) { resolve(count); return; }
+      const item = wanted.get(String(cursor.key));
+      if (item && cursor.value?.blob) {
+        item.artBlob = cursor.value.blob;
+        item.artworkLoaded = true;
+        ensureArtUrl(item);
+        count++;
+      }
+      cursor.continue();
+    };
+    request.onerror = () => reject(request.error);
+  }).catch(() => 0);
+  return hydrated;
 }
 
 function setDownloadStatus(message, progress = null) {
@@ -741,10 +785,10 @@ async function fetchArtworkSource(item) {
           return blob;
         }
       } else if (response.status === 404) {
-        artworkApiAvailable = false;
+        if (artworkApiAvailable === null) artworkApiAvailable = false;
       }
     } catch (_) {
-      artworkApiAvailable = false;
+      if (artworkApiAvailable === null) artworkApiAvailable = false;
     } finally {
       clearTimeout(timeout);
     }
@@ -777,6 +821,51 @@ async function loadItemArtwork(item) {
     })().finally(() => { item.artworkPromise = null; });
   }
   return item.artworkPromise;
+}
+
+function showPreparationStatus(message, progress = 0) {
+  $("google-signin-button").hidden = true;
+  $("download-retry").hidden = true;
+  $("download-screen").style.display = "grid";
+  $("app-shell").hidden = true;
+  setDownloadStatus(message, progress);
+}
+
+async function prepareGroupArtwork(group) {
+  const preparedGroups = readPreparedArtworkGroups();
+  const expectedImages = Number.isFinite(Number(preparedGroups[group.id]))
+    ? Number(preparedGroups[group.id])
+    : null;
+  const hydratedImages = await hydrateGroupArtworkCache(group);
+  if (expectedImages !== null && hydratedImages >= expectedImages) {
+    for (const item of group.songs) item.artworkLoaded = true;
+    return;
+  }
+
+  showPreparationStatus(`Preparing ${group.name} artwork…`, 0);
+  const pending = group.songs.filter((item) => !item.artworkLoaded);
+  let cursor = 0;
+  let completed = group.songs.length - pending.length;
+  let failed = false;
+  const worker = async () => {
+    while (cursor < pending.length) {
+      const item = pending[cursor++];
+      try {
+        await loadItemArtwork(item);
+      } catch (_) {
+        failed = true;
+      }
+      completed++;
+      setDownloadStatus(
+        `Preparing ${group.name} artwork… ${completed}/${group.songs.length}`,
+        completed / Math.max(1, group.songs.length),
+      );
+      if (item !== state.current && item !== state.queuedNext && item !== getNextSong()) releaseItemResources(item);
+      await yieldToBrowser();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, worker));
+  if (!failed) savePreparedArtworkGroup(group, group.songs.filter((item) => item.artBlob).length);
 }
 
 function ensureArtUrl(item) {
@@ -1258,27 +1347,37 @@ function updatePlayer() {
 function updateMediaSession() {
   if (!navigator.mediaSession) return;
   const item = state.current;
+  const artworkUrl = item ? ensureArtUrl(item) : "";
   navigator.mediaSession.metadata = item ? new MediaMetadata({
     title: item.name,
     artist: item.artist,
     album: state.selectedGroup?.name || "Playlist Studio",
-    artwork: ensureArtUrl(item) ? [{ src: ensureArtUrl(item) }] : [],
+    artwork: artworkUrl ? [{
+      src: artworkUrl,
+      sizes: `${ARTWORK_THUMBNAIL_SIZE}x${ARTWORK_THUMBNAIL_SIZE}`,
+      type: item.artBlob?.type || "image/webp",
+    }] : [],
   }) : null;
-  navigator.mediaSession.playbackState = audioA.paused ? "paused" : "playing";
+  navigator.mediaSession.playbackState = !item ? "none" : audioA.paused ? "paused" : "playing";
+  updateMediaPosition(true);
 }
 
-function updateMediaPosition() {
+function updateMediaPosition(force = false) {
   if (!navigator.mediaSession?.setPositionState) return;
   const now = performance.now();
-  if (now - lastMediaPositionUpdate < 1000) return;
+  if (!force && now - lastMediaPositionUpdate < 1000) return;
   lastMediaPositionUpdate = now;
   const duration = audioA.duration || state.current?.duration || 0;
   if (duration > 0 && Number.isFinite(duration)) {
-    navigator.mediaSession.setPositionState({
-      duration,
-      playbackRate: audioA.playbackRate || 1,
-      position: Math.min(audioA.currentTime || 0, duration),
-    });
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: audioA.playbackRate || 1,
+        position: Math.max(0, Math.min(audioA.currentTime || 0, duration)),
+      });
+    } catch (_) {}
+  } else {
+    try { navigator.mediaSession.setPositionState(); } catch (_) {}
   }
 }
 
@@ -1389,7 +1488,7 @@ async function searchSongs(query) {
 async function selectGroup(id, { prepareInitial = true } = {}) {
   const group = state.groups.find((candidate) => candidate.id === id);
   if (!group) return;
-  playRequestToken++;
+  const groupRequestToken = ++playRequestToken;
   const previousGroup = state.selectedGroup;
   const previous = state.current;
   resetArtworkLoader(previousGroup && previousGroup !== group ? previousGroup : null);
@@ -1405,12 +1504,19 @@ async function selectGroup(id, { prepareInitial = true } = {}) {
   audioA.currentTime = 0;
   audioB.currentTime = 0;
   releaseItemResources(previous);
+  await prepareGroupArtwork(group);
+  if (groupRequestToken !== playRequestToken) {
+    for (const item of group.songs) releaseItemArtwork(item);
+    return;
+  }
   state.selectedGroup = group;
   state.songs = group.songs;
   clearQueuedNext();
   state.current = group.songs[0] || null;
   state.currentIndex = state.current ? 0 : -1;
   state.started = false;
+  $("download-screen").style.display = "none";
+  $("app-shell").hidden = false;
   $("playlist-picker").hidden = true;
   $("player-view").hidden = false;
   scheduleDrawerClose();
@@ -1753,17 +1859,94 @@ function playNextTrack() {
   else toast("You are at the end of this set.");
 }
 
+function seekCurrentAudio(target, fastSeek = false) {
+  if (!state.current) return;
+  if (state.fading) cancelPauseFade();
+  if (transition.active) abortTransition();
+  const duration = audioA.duration || state.current.duration || 0;
+  const position = Math.max(0, duration > 0 ? Math.min(target, duration) : target);
+  try {
+    if (fastSeek && typeof audioA.fastSeek === "function") audioA.fastSeek(position);
+    else audioA.currentTime = position;
+  } catch (_) { return; }
+  onAudioTimeUpdate();
+  updateMediaPosition(true);
+  persistPlaybackState(true);
+}
+
+function playPreviousTrack() {
+  if (state.fadePaused) {
+    goBackToPaused();
+    return;
+  }
+  if (!state.current) return;
+  const inPoint = state.current.startPoint || 0;
+  if (audioA.currentTime > inPoint + 3 || state.currentIndex <= 0) {
+    seekCurrentAudio(inPoint);
+    return;
+  }
+  const previous = state.songs[state.currentIndex - 1];
+  if (previous) playSong(previous, !audioA.paused);
+}
+
+function stopPlayback() {
+  abortTransition();
+  state.fading = false;
+  state.fadePaused = null;
+  state.resumeFadeIn = false;
+  audioA.pause();
+  updatePlayButton();
+  updateNextTrackLabel();
+  updateMediaSession();
+  persistPlaybackState(true);
+}
+
+async function updateScreenWakeLock() {
+  const requestToken = ++wakeLockRequestToken;
+  const shouldHold = Boolean(
+    navigator.wakeLock?.request
+    && state.locked
+    && !audioA.paused
+    && document.visibilityState === "visible"
+  );
+  if (!shouldHold) {
+    const activeLock = screenWakeLock;
+    screenWakeLock = null;
+    if (activeLock && !activeLock.released) activeLock.release().catch(() => {});
+    return;
+  }
+  if (screenWakeLock && !screenWakeLock.released) return;
+  try {
+    const lock = await navigator.wakeLock.request("screen");
+    if (
+      requestToken !== wakeLockRequestToken
+      || !state.locked
+      || audioA.paused
+      || document.visibilityState !== "visible"
+    ) {
+      lock.release().catch(() => {});
+      return;
+    }
+    screenWakeLock = lock;
+    lock.addEventListener("release", () => {
+      if (screenWakeLock === lock) screenWakeLock = null;
+    }, { once: true });
+  } catch (_) {}
+}
+
 function onAudioPlay() {
   audioContext?.resume().catch(() => {});
   updatePlayButton();
   updateNextTrackLabel();
   updateMediaSession();
+  updateScreenWakeLock();
   persistPlaybackState(true);
 }
 function onAudioPause() {
   updatePlayButton();
   updateNextTrackLabel();
   updateMediaSession();
+  updateScreenWakeLock();
   persistPlaybackState(true);
 }
 function onAudioEnded() {
@@ -1850,6 +2033,7 @@ function setLocked(locked) {
   lockTimeout = !locked && state.lockEngaged ? setTimeout(() => setLocked(true), LOCK_TIMEOUT_MS) : null;
   if (locked) enterFullscreen();
   else exitFullscreen();
+  updateScreenWakeLock();
 }
 
 function unlock() {
@@ -1878,6 +2062,7 @@ async function clearCache() {
   try {
     localStorage.removeItem(SONG_METADATA_CACHE);
     localStorage.removeItem(SHORTENED_DURATION_CACHE);
+    localStorage.removeItem(ARTWORK_GROUP_CACHE);
   } catch (_) {}
   $("app-shell").hidden = true;
   $("download-screen").style.display = "grid";
@@ -1895,6 +2080,18 @@ async function refreshMetadataInBackground() {
   await preloadAllGroupDurations();
 }
 
+async function prepareInitialMetadataCache() {
+  const needsMetadata = () => state.groups.some((group) => group.songs.some((item) => !item.metadataLoaded || !item.duration));
+  if (needsMetadata()) {
+    showPreparationStatus("Preparing track times for offline use…", .96);
+    await hydrateServerSongMetadata(state.groups, 15000);
+  }
+  if (needsMetadata()) {
+    setDownloadStatus("Reading track times from the archive…", .98);
+  }
+  await preloadAllGroupDurations();
+}
+
 async function bootstrap(allowDownload = false) {
   try {
     const archive = await getZipBlob(allowDownload);
@@ -1904,6 +2101,7 @@ async function bootstrap(allowDownload = false) {
     if (missing.length) throw new Error(`The archive is missing ${missing[0].name}.`);
     hydrateCachedSongMetadata(state.groups);
     loadShortenedDurationCache();
+    await prepareInitialMetadataCache();
     renderPicker();
     renderDrawer();
     $("google-signin-button").hidden = true;
@@ -2013,14 +2211,18 @@ if (navigator.mediaSession) {
     if (state.fading) cancelPauseFade();
     else if (!audioA.paused) fadeToPause();
   });
-  setMediaAction("seekbackward", () => { audioA.currentTime = Math.max(0, audioA.currentTime - 10); });
-  setMediaAction("seekforward", () => { audioA.currentTime = Math.min(audioA.duration || Infinity, audioA.currentTime + 10); });
+  setMediaAction("seekbackward", (details) => seekCurrentAudio(audioA.currentTime - (details.seekOffset || 10)));
+  setMediaAction("seekforward", (details) => seekCurrentAudio(audioA.currentTime + (details.seekOffset || 10)));
+  setMediaAction("seekto", (details) => seekCurrentAudio(details.seekTime, details.fastSeek));
+  setMediaAction("previoustrack", playPreviousTrack);
   setMediaAction("nexttrack", playNextTrack);
+  setMediaAction("stop", stopPlayback);
 }
 const checkpointPlayback = () => persistPlaybackState(true);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") checkpointPlayback();
   else if (!audioA.paused) audioContext?.resume().catch(() => {});
+  updateScreenWakeLock();
 });
 document.addEventListener("freeze", checkpointPlayback);
 document.addEventListener("resume", () => {
