@@ -1,3 +1,4 @@
 playlists/*
 !playlists/.gitkeep
 __pycache__/*
+gitignoreme/

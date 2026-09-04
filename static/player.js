@@ -1,5 +1,5 @@
 const GOOGLE_CLIENT_ID = "465530902895-smsu60b8qvdv83ahrbr7pi7grl5cjh8b.apps.googleusercontent.com";
-const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/16qocCGTgfAXSsewW6LS7s-A7FHPfa2nT?alt=media&acknowledgeAbuse=true";
+const DRIVE_URL = "https://www.googleapis.com/drive/v3/files/1AzBsccUs2XHxUxGTyvGb0vC3PaKXrubz?alt=media&acknowledgeAbuse=true";
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 const CACHE_DB = "playlist-studio-player-cache";
 const CACHE_STORE = "archives";
