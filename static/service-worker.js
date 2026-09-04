@@ -1,4 +1,4 @@
-const CACHE_NAME = "playlist-studio-player-v12";
+const CACHE_NAME = "playlist-studio-player-v13";
 const APP_SHELL = [
   "./player.html",
   "./player.css",

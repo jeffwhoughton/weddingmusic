@@ -1686,6 +1686,10 @@ function getNextSong() {
   return state.currentIndex >= 0 ? state.songs[state.currentIndex + 1] || null : state.songs[0] || null;
 }
 
+function pausesOnNextSongAtEnd(item) {
+  return item?.name?.trim().toLocaleLowerCase() === "the one";
+}
+
 function initAudioGraph() {
   if (!audioContext) {
     audioContext = new (window.AudioContext || window.webkitAudioContext)({
@@ -2113,7 +2117,7 @@ function onAudioPause() {
 function onAudioEnded() {
   if (transition.active) return;
   const next = getNextSong();
-  if (next) playSong(next, true);
+  if (next) playSong(next, !pausesOnNextSongAtEnd(state.current));
 }
 function onAudioTimeUpdate() {
   const duration = audioA.duration || state.current?.duration || 0;
@@ -2123,7 +2127,7 @@ function onAudioTimeUpdate() {
   $("time-duration").textContent = fmt(duration);
   updateMediaPosition();
   persistPlaybackState();
-  if (!transition.active && audioA.paused === false && state.current && duration && state.current.transitionPoint !== null && audioA.currentTime >= state.current.transitionPoint) startTransition();
+  if (!transition.active && audioA.paused === false && state.current && !pausesOnNextSongAtEnd(state.current) && duration && state.current.transitionPoint !== null && audioA.currentTime >= state.current.transitionPoint) startTransition();
 }
 
 function attachAudioListeners() {
