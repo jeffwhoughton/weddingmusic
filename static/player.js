@@ -1687,7 +1687,11 @@ function getNextSong() {
 }
 
 function initAudioGraph() {
-  if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  if (!audioContext) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)({
+      latencyHint: "playback",
+    });
+  }
   for (const element of [audioA, audioB]) {
     if (audioGraphs.has(element)) continue;
     const source = audioContext.createMediaElementSource(element);
